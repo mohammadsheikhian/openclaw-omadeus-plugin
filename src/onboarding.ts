@@ -51,18 +51,12 @@ async function noteOmadeusAuthHelp(
   prompter: WizardPrompter,
   environment: OmadeusEnvironment,
 ): Promise<void> {
-  const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
   const envLabel = OMADEUS_ENVIRONMENTS[environment].label;
   await prompter.note(
     [
-      "Omadeus authenticates via CAS + Maestro (email + password + organization).",
-      "You need:",
-      "  - Email + password",
-      "  - Organization ID (we can look it up for you)",
-      `Environment: ${envLabel}`,
-      `CAS URL: ${casUrl}`,
-      `Maestro URL: ${maestroUrl}`,
-      "Env vars supported: OMADEUS_EMAIL, OMADEUS_PASSWORD, OMADEUS_ORGANIZATION_ID.",
+      `Connect OpenClaw to Omadeus (${envLabel}).`,
+      "",
+      "We'll ask for your email and password, then show the organizations on your account so you can pick one.",
     ].join("\n"),
     "Omadeus setup",
   );
