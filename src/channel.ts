@@ -57,12 +57,15 @@ const isUnconfigured = (account: Account) => account.credentialSource === "none"
 
 let lastPersistedToken: string | null = null;
 
-async function persistSessionToken(token: string): Promise<void> {
+async function persistSessionToken(
+  token: string,
+  environment: Account["environment"],
+): Promise<void> {
   if (lastPersistedToken === token) return;
   const runtime = getOmadeusRuntime();
   const cfg = runtime.config.current() as OpenClawConfig;
   const section = getOmadeusChannelConfig(cfg) ?? {};
-  if (section.sessionToken === token) {
+  if (section.sessionToken === token && section.sessionTokenEnvironment === environment) {
     lastPersistedToken = token;
     return;
   }
@@ -74,6 +77,7 @@ async function persistSessionToken(token: string): Promise<void> {
         omadeus: {
           ...(getOmadeusChannelConfig(draft) ?? {}),
           sessionToken: token,
+          sessionTokenEnvironment: environment,
         },
       };
     },
@@ -103,12 +107,12 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
   defaultAccountId: resolveDefaultOmadeusAccountId,
   deleteMode: "clear-fields",
   clearBaseFields: [
-    "casUrl",
-    "maestroUrl",
+    "environment",
     "email",
     "password",
     "organizationId",
     "sessionToken",
+    "sessionTokenEnvironment",
     "inbound",
   ],
   // Keep adapter contract satisfied even though Omadeus no longer uses DM allowlists.
@@ -561,7 +565,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         initialToken: account.sessionToken,
         onRefresh: (token) => {
           log.info("[omadeus] token refreshed");
-          void persistSessionToken(token).catch((err) =>
+          void persistSessionToken(token, account.environment).catch((err) =>
             log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
           );
         },

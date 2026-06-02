@@ -1,5 +1,6 @@
 import type { ChannelSetupAdapter } from "openclaw/plugin-sdk/setup";
 import type { OpenClawConfig } from "../runtime-api.js";
+import { resolveOmadeusEnvironment } from "./defaults.js";
 
 function readSetupStringField(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
@@ -29,8 +30,8 @@ export const omadeusSetupAdapter: ChannelSetupAdapter = {
   },
   applyAccountConfig: ({ cfg, input }) => {
     const rawInput = input as Record<string, unknown>;
-    const casUrl = input.httpUrl?.trim() || undefined;
-    const maestroUrl = input.url?.trim() || undefined;
+    const environmentRaw = readSetupStringField(rawInput, "environment");
+    const environment = environmentRaw ? resolveOmadeusEnvironment(environmentRaw) : undefined;
     const email = readSetupStringField(rawInput, "email");
     const password = input.password?.trim() || undefined;
     const organizationId = readSetupNumberField(rawInput, "organizationId");
@@ -51,8 +52,7 @@ export const omadeusSetupAdapter: ChannelSetupAdapter = {
         omadeus: {
           ...omadeusPrevious,
           enabled: true,
-          ...(casUrl ? { casUrl } : {}),
-          ...(maestroUrl ? { maestroUrl } : {}),
+          ...(environment ? { environment } : {}),
           ...(email ? { email } : {}),
           ...(password ? { password } : {}),
           ...(organizationId ? { organizationId } : {}),

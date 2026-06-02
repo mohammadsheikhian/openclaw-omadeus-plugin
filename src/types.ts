@@ -1,3 +1,5 @@
+import type { OmadeusEnvironment } from "./defaults.js";
+
 // ---------------------------------------------------------------------------
 // Omadeus config shape (stored under channels.omadeus in OpenClaw config)
 // ---------------------------------------------------------------------------
@@ -61,13 +63,14 @@ export type OmadeusInboundPolicy = {
 
 export type OmadeusChannelConfig = {
   enabled?: boolean;
-  casUrl?: string;
-  maestroUrl?: string;
+  environment?: OmadeusEnvironment;
   email?: string;
   password?: string;
   organizationId?: number;
   /** Cached Omadeus session JWT obtained during onboarding/startup. */
   sessionToken?: string;
+  /** Environment the cached sessionToken was minted under (must match `environment`). */
+  sessionTokenEnvironment?: OmadeusEnvironment;
   /** Jaguar chat ingress allowlists and mention rules. */
   inbound?: OmadeusInboundPolicy;
 };
@@ -77,6 +80,7 @@ export type ResolvedOmadeusAccount = {
   name?: string;
   enabled: boolean;
   config: OmadeusChannelConfig;
+  environment: OmadeusEnvironment;
   casUrl: string;
   maestroUrl: string;
   email: string;

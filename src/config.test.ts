@@ -45,8 +45,9 @@ describe("resolveOmadeusAccount", () => {
     expect(account.email).toBe("user@example.com");
     expect(account.password).toBe("secret");
     expect(account.organizationId).toBe(123);
+    expect(account.environment).toBe("dev");
     expect(account.casUrl).toBe("https://dev1-cas.rouztech.com");
-    expect(account.maestroUrl).toBe("https://dev3-maestro.rouztech.com");
+    expect(account.maestroUrl).toBe("https://dev1-maestro.rouztech.com");
   });
 
   it("prefers config credentials over env credentials", () => {
@@ -71,5 +72,58 @@ describe("resolveOmadeusAccount", () => {
     expect(account.email).toBe("config@example.com");
     expect(account.password).toBe("config-secret");
     expect(account.organizationId).toBe(456);
+  });
+
+  it("derives production URLs from environment", () => {
+    const account = resolveOmadeusAccount({
+      cfg: {
+        channels: {
+          omadeus: {
+            enabled: true,
+            environment: "production",
+          },
+        },
+      },
+    });
+
+    expect(account.environment).toBe("production");
+    expect(account.casUrl).toBe("https://xas.xeba.tech");
+    expect(account.maestroUrl).toBe("https://maestro.xeba.tech");
+  });
+
+  it("ignores sessionToken when sessionTokenEnvironment does not match environment", () => {
+    const account = resolveOmadeusAccount({
+      cfg: {
+        channels: {
+          omadeus: {
+            enabled: true,
+            environment: "production",
+            sessionToken: "cached-token",
+            sessionTokenEnvironment: "dev",
+          },
+        },
+      },
+    });
+
+    expect(account.sessionToken).toBeUndefined();
+    expect(account.credentialSource).toBe("none");
+  });
+
+  it("honors sessionToken when sessionTokenEnvironment matches environment", () => {
+    const account = resolveOmadeusAccount({
+      cfg: {
+        channels: {
+          omadeus: {
+            enabled: true,
+            environment: "staging",
+            sessionToken: "cached-token",
+            sessionTokenEnvironment: "staging",
+          },
+        },
+      },
+    });
+
+    expect(account.sessionToken).toBe("cached-token");
+    expect(account.credentialSource).toBe("session");
   });
 });

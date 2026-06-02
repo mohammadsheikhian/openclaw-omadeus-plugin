@@ -6,12 +6,18 @@
     "additionalProperties": false,
     "properties": {
       "enabled": { "type": "boolean" },
-      "casUrl": { "type": "string" },
-      "maestroUrl": { "type": "string" },
+      "environment": {
+        "type": "string",
+        "enum": ["production", "staging", "dev"]
+      },
       "email": { "type": "string" },
       "password": { "type": "string" },
       "organizationId": { "type": "number" },
       "sessionToken": { "type": "string" },
+      "sessionTokenEnvironment": {
+        "type": "string",
+        "enum": ["production", "staging", "dev"]
+      },
       "inbound": {
         "type": "object",
         "additionalProperties": false,
@@ -92,12 +98,18 @@
         "additionalProperties": false,
         "properties": {
           "enabled": { "type": "boolean" },
-          "casUrl": { "type": "string" },
-          "maestroUrl": { "type": "string" },
+          "environment": {
+            "type": "string",
+            "enum": ["production", "staging", "dev"]
+          },
           "email": { "type": "string" },
           "password": { "type": "string" },
           "organizationId": { "type": "number" },
           "sessionToken": { "type": "string" },
+          "sessionTokenEnvironment": {
+            "type": "string",
+            "enum": ["production", "staging", "dev"]
+          },
           "inbound": {
             "type": "object",
             "additionalProperties": false,
@@ -172,13 +184,8 @@
         }
       },
       "uiHints": {
-        "casUrl": {
-          "label": "CAS URL",
-          "placeholder": "https://dev1-cas.rouztech.com"
-        },
-        "maestroUrl": {
-          "label": "Maestro URL",
-          "placeholder": "https://dev3-maestro.rouztech.com"
+        "environment": {
+          "label": "Environment"
         },
         "email": {
           "label": "Email"
@@ -193,6 +200,10 @@
         "sessionToken": {
           "label": "Session token",
           "sensitive": true,
+          "advanced": true
+        },
+        "sessionTokenEnvironment": {
+          "label": "Session token environment",
           "advanced": true
         },
         "inbound": {

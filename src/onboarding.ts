@@ -7,7 +7,13 @@ import {
 import { listMemberChannelViews } from "./api/channel.api.js";
 import { authenticate } from "./auth.js";
 import { getOmadeusChannelConfig, resolveOmadeusAccount } from "./config.js";
-import { OMADEUS_CAS_URL, OMADEUS_MAESTRO_URL } from "./defaults.js";
+import {
+  getOmadeusEnvironmentUrls,
+  OMADEUS_DEFAULT_ENVIRONMENT,
+  OMADEUS_ENVIRONMENTS,
+  resolveOmadeusEnvironment,
+  type OmadeusEnvironment,
+} from "./defaults.js";
 import { formatMemberLabel } from "./member-resolve.js";
 import type {
   OmadeusChannelConfig,
@@ -41,19 +47,42 @@ function formatAuthError(err: unknown): string {
   return parts.join(" — ");
 }
 
-async function noteOmadeusAuthHelp(prompter: WizardPrompter): Promise<void> {
+async function noteOmadeusAuthHelp(
+  prompter: WizardPrompter,
+  environment: OmadeusEnvironment,
+): Promise<void> {
+  const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
+  const envLabel = OMADEUS_ENVIRONMENTS[environment].label;
   await prompter.note(
     [
       "Omadeus authenticates via CAS + Maestro (email + password + organization).",
       "You need:",
       "  - Email + password",
       "  - Organization ID (we can look it up for you)",
-      `CAS URL: ${OMADEUS_CAS_URL}`,
-      `Maestro URL: ${OMADEUS_MAESTRO_URL}`,
+      `Environment: ${envLabel}`,
+      `CAS URL: ${casUrl}`,
+      `Maestro URL: ${maestroUrl}`,
       "Env vars supported: OMADEUS_EMAIL, OMADEUS_PASSWORD, OMADEUS_ORGANIZATION_ID.",
     ].join("\n"),
     "Omadeus setup",
   );
+}
+
+async function promptEnvironment(
+  prompter: WizardPrompter,
+  existing?: OmadeusEnvironment,
+): Promise<OmadeusEnvironment> {
+  const initial = existing ?? OMADEUS_DEFAULT_ENVIRONMENT;
+  const choice = await prompter.select({
+    message: "Select Omadeus environment",
+    options: (Object.keys(OMADEUS_ENVIRONMENTS) as OmadeusEnvironment[]).map((env) => ({
+      value: env,
+      label: OMADEUS_ENVIRONMENTS[env].label,
+      hint: getOmadeusEnvironmentUrls(env).maestroUrl,
+    })),
+    initialValue: initial,
+  });
+  return resolveOmadeusEnvironment(choice);
 }
 
 async function promptOrganizationId(params: {
@@ -315,15 +344,18 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
     const section = getOmadeusChannelConfig(cfg) ?? {};
     let next = cfg;
 
+    const environment = await promptEnvironment(
+      prompter,
+      section.environment ? resolveOmadeusEnvironment(section.environment) : undefined,
+    );
+    const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
+
     if (account.credentialSource === "none") {
-      await noteOmadeusAuthHelp(prompter);
+      await noteOmadeusAuthHelp(prompter, environment);
     }
 
     const envEmail = process.env.OMADEUS_EMAIL?.trim();
     const envPassword = process.env.OMADEUS_PASSWORD?.trim();
-
-    const casUrl = OMADEUS_CAS_URL;
-    const maestroUrl = OMADEUS_MAESTRO_URL;
 
     let { email, password } = await promptCredentials(prompter, {
       email: section.email ?? envEmail,
@@ -465,12 +497,12 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
         ...next.channels,
         omadeus: {
           enabled: true,
-          casUrl,
-          maestroUrl,
+          environment,
           email,
           password,
           organizationId,
           sessionToken,
+          sessionTokenEnvironment: environment,
           inbound: {
             version: 1,
             direct: {
