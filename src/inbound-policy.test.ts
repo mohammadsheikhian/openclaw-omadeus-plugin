@@ -24,14 +24,60 @@ function baseInbound(
 }
 
 describe("evaluateOmadeusInboundPolicy", () => {
-  it("drops self-authored messages", () => {
+  it("always allows the logged-in user as a direct sender, even when not in the allowlist", () => {
+    const cfg: OmadeusChannelConfig = {
+      inbound: {
+        // Allowlist deliberately excludes self (e.g. a config written before
+        // self was auto-added). Self must still get through.
+        direct: { enabled: true, allowedSenderReferenceIds: [201], requireMention: "never" },
+      },
+    };
     const d = evaluateOmadeusInboundPolicy({
       inbound: baseInbound({ subscribableKind: "direct", fromReferenceId: selfRef }),
-      omadeusCfg: {},
+      omadeusCfg: cfg,
       selfReferenceId: selfRef,
     });
-    expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toBe("self_message");
+    expect(d.allow).toBe(true);
+  });
+
+  it("always allows the logged-in user in channels, even when not in the sender allowlist", () => {
+    const cfg: OmadeusChannelConfig = {
+      inbound: {
+        channels: {
+          enabled: true,
+          allowedRoomIds: [10],
+          // Sender allowlist deliberately excludes self.
+          allowedSenderReferenceIds: [201],
+          requireMention: "never",
+        },
+      },
+    };
+    const d = evaluateOmadeusInboundPolicy({
+      inbound: baseInbound({ subscribableKind: "channel", roomId: 10, fromReferenceId: selfRef }),
+      omadeusCfg: cfg,
+      selfReferenceId: selfRef,
+    });
+    expect(d.allow).toBe(true);
+  });
+
+  it("always allows the logged-in user in entity rooms, even when not in the sender allowlist", () => {
+    const cfg: OmadeusChannelConfig = {
+      inbound: {
+        entities: {
+          enabled: true,
+          allowedKinds: ["task"],
+          // Sender allowlist deliberately excludes self.
+          allowedSenderReferenceIds: [201],
+          requireMention: "never",
+        },
+      },
+    };
+    const d = evaluateOmadeusInboundPolicy({
+      inbound: baseInbound({ subscribableKind: "task", fromReferenceId: selfRef }),
+      omadeusCfg: cfg,
+      selfReferenceId: selfRef,
+    });
+    expect(d.allow).toBe(true);
   });
 
   it("default config allows direct without mention", () => {

@@ -27,6 +27,7 @@ import {
   type OmadeusNuggetPriority,
 } from "./api/nugget.api.js";
 import { addMessageReaction, deleteMessage, editMessage } from "./api/message.api.js";
+import { generateTemporaryId } from "./utils/http.util.js";
 import {
   getOmadeusChannelConfig,
   listOmadeusAccountIds,
@@ -38,6 +39,7 @@ import { createOmadeusMessageHandler } from "./message-handler.js";
 import { parseTaskChannelTargetIntent } from "./nugget-lookup.js";
 import { sendOmadeusMessage, type OutboundDeps } from "./outbound.js";
 import { getOmadeusRuntime } from "./runtime.js";
+import { SentMessageTracker } from "./sent-message-tracker.js";
 import { omadeusSetupAdapter } from "./setup-core.js";
 import { omadeusSetupWizard } from "./setup-surface.js";
 import { createDolphinSocketClient, type DolphinSocketClient } from "./socket/dolphin.socket.js";
@@ -51,7 +53,8 @@ const gatewayState: {
   tokenManager: OmadeusTokenManager | null;
   dolphin: DolphinSocketClient | null;
   jaguar: JaguarSocketClient | null;
-} = { tokenManager: null, dolphin: null, jaguar: null };
+  sentTracker: SentMessageTracker | null;
+} = { tokenManager: null, dolphin: null, jaguar: null, sentTracker: null };
 
 const isUnconfigured = (account: Account) => account.credentialSource === "none";
 
@@ -319,7 +322,13 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
           );
         }
         try {
-          await editMessage(apiOpts(), { messageId, body });
+          const temporaryId = generateTemporaryId();
+          // Track before editing so the edit's socket echo is recognized as ours.
+          gatewayState.sentTracker?.trackOutbound({ temporaryId, body });
+          const edited = await editMessage(apiOpts(), { messageId, body, temporaryId });
+          if (typeof edited?.id === "number") {
+            gatewayState.sentTracker?.trackId(edited.id);
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return actionError(msg);
@@ -466,6 +475,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
             tokenManager: gatewayState.tokenManager,
           },
           jaguarSocket: gatewayState.jaguar,
+          sentTracker: gatewayState.sentTracker ?? undefined,
         };
         return await sendOmadeusMessage(deps, { to, text });
       },
@@ -589,9 +599,13 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
 
       const selfReferenceId = tokenManager.getPayload().referenceId;
 
+      const sentTracker = new SentMessageTracker();
+      gatewayState.sentTracker = sentTracker;
+
       const outboundDeps: OutboundDeps = {
         apiOpts: { maestroUrl: account.maestroUrl, tokenManager },
         jaguarSocket: null as unknown as JaguarSocketClient,
+        sentTracker,
       };
 
       const handleMessage = createOmadeusMessageHandler({
@@ -612,6 +626,23 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
               ? `DM from ${msg.senderReferenceId}`
               : `${msg.subscribableKind}/${msg.roomName ?? msg.roomId} from ${msg.senderReferenceId}`;
           log.info(`[jaguar] ${label}: ${msg.body.slice(0, 80)}`);
+
+          // Suppress echoes of messages we sent (we send as the logged-in
+          // account, so our own messages come back over the socket). This
+          // replaces the old "drop everything from self" rule, letting the
+          // logged-in user message their own OpenClaw.
+          if (
+            sentTracker.isEcho({
+              id: msg.id,
+              temporaryId: msg.temporaryId,
+              body: msg.body,
+              roomId: msg.roomId,
+              fromSelf: msg.senderReferenceId === selfReferenceId,
+            })
+          ) {
+            log.debug?.(`[jaguar] suppressed self-echo id=${msg.id}`);
+            return;
+          }
 
           const inbound = parseJaguarMessage(msg, { selfReferenceId }, log);
           if (inbound) {
@@ -688,6 +719,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         gatewayState.tokenManager = null;
         gatewayState.jaguar = null;
         gatewayState.dolphin = null;
+        gatewayState.sentTracker = null;
         lastPersistedToken = null;
         ctx.setStatus({
           accountId: account.accountId,

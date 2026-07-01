@@ -49,7 +49,15 @@ function surfaceForKind(kind: OmadeusSubscribableKind): "direct" | "channel" | "
   return "entity";
 }
 
-function senderAllowed(allowed: number[] | undefined, fromReferenceId: number): boolean {
+function senderAllowed(
+  allowed: number[] | undefined,
+  fromReferenceId: number,
+  selfReferenceId: number,
+): boolean {
+  // The logged-in user can always reach their own instance, regardless of the
+  // configured allowlist. Their own echoes are filtered earlier by the
+  // SentMessageTracker, so this cannot create a reply loop.
+  if (fromReferenceId === selfReferenceId) return true;
   if (!allowed || allowed.length === 0) return true;
   return allowed.includes(fromReferenceId);
 }
@@ -115,7 +123,11 @@ function mentionRequired(params: {
 
 /**
  * Evaluate whether a normalized Jaguar inbound should be dispatched to OpenClaw.
- * Callers must drop self-authored messages separately if they prefer logging there.
+ *
+ * The logged-in user (`selfReferenceId`) is always treated as an allowed sender
+ * so they can message their own OpenClaw even if the stored allowlist predates
+ * them. Self-authored *echoes* (the reply loop) are filtered earlier, at socket
+ * ingestion, by the {@link SentMessageTracker} — not here.
  */
 export function evaluateOmadeusInboundPolicy(params: {
   inbound: OmadeusInboundMessage;
@@ -124,14 +136,6 @@ export function evaluateOmadeusInboundPolicy(params: {
 }): InboundPolicyDecision {
   const { inbound, omadeusCfg, selfReferenceId } = params;
 
-  if (inbound.fromReferenceId === selfReferenceId) {
-    return {
-      allow: false,
-      reason: "self_message",
-      details: { fromReferenceId: inbound.fromReferenceId, selfReferenceId },
-    };
-  }
-
   const policy = mergePolicy(omadeusCfg);
   const surface = surfaceForKind(inbound.subscribableKind);
 
@@ -139,7 +143,9 @@ export function evaluateOmadeusInboundPolicy(params: {
     if (!policy.direct.enabled) {
       return { allow: false, reason: "direct_disabled", details: { surface } };
     }
-    if (!senderAllowed(policy.direct.allowedSenderReferenceIds, inbound.fromReferenceId)) {
+    if (
+      !senderAllowed(policy.direct.allowedSenderReferenceIds, inbound.fromReferenceId, selfReferenceId)
+    ) {
       return {
         allow: false,
         reason: "direct_sender_not_allowed",
@@ -157,7 +163,9 @@ export function evaluateOmadeusInboundPolicy(params: {
     if (!policy.channels.enabled) {
       return { allow: false, reason: "channels_disabled", details: { surface } };
     }
-    if (!senderAllowed(policy.channels.allowedSenderReferenceIds, inbound.fromReferenceId)) {
+    if (
+      !senderAllowed(policy.channels.allowedSenderReferenceIds, inbound.fromReferenceId, selfReferenceId)
+    ) {
       return {
         allow: false,
         reason: "channel_sender_not_allowed",
@@ -171,6 +179,7 @@ export function evaluateOmadeusInboundPolicy(params: {
       allowedChannelViewIds: policy.channels.allowedChannelViewIds,
     });
     const senderInList =
+      inbound.fromReferenceId === selfReferenceId ||
       !policy.channels.allowedSenderReferenceIds ||
       policy.channels.allowedSenderReferenceIds.length === 0 ||
       policy.channels.allowedSenderReferenceIds.includes(inbound.fromReferenceId);
@@ -208,7 +217,9 @@ export function evaluateOmadeusInboundPolicy(params: {
       details: { kind: inbound.subscribableKind, allowedKinds: policy.entities.allowedKinds },
     };
   }
-  if (!senderAllowed(policy.entities.allowedSenderReferenceIds, inbound.fromReferenceId)) {
+  if (
+    !senderAllowed(policy.entities.allowedSenderReferenceIds, inbound.fromReferenceId, selfReferenceId)
+  ) {
     return {
       allow: false,
       reason: "entity_sender_not_allowed",

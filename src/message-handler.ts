@@ -6,6 +6,7 @@ import {
   type RuntimeEnv,
 } from "../runtime-api.js";
 import { createNugget, findNuggetByTaskChannelRoom, resolveTaskChannelRoomId, searchNuggetByNumber } from "./api/nugget.api.js";
+import { seeMessage } from "./api/message.api.js";
 import {
   appendNuggetContextForTaskOrNuggetRoom,
   appendNuggetLookupContextForAgent,
@@ -68,7 +69,7 @@ export type OmadeusMessageHandlerDeps = {
   runtime: RuntimeEnv;
   log: Log;
   outboundDeps: OutboundDeps;
-  /** Authenticated Omadeus user; used to drop self-authored messages and inbound policy. */
+  /** Authenticated Omadeus user reference id. */
   selfReferenceId: number;
 };
 
@@ -82,7 +83,25 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     channel: "omadeus",
   });
 
-  const handleMessageNow = async (inbound: OmadeusInboundMessage) => {
+  /** Mark inbound messages as seen in Omadeus (fire-and-forget). */
+  const markMessagesSeen = (messageIds: number[]) => {
+    for (const messageId of messageIds) {
+      if (!Number.isFinite(messageId)) continue;
+      log.info(`omadeus: marking message ${messageId} seen`);
+      seeMessage(outboundDeps.apiOpts, { messageId })
+        .then(() => log.debug?.(`omadeus: marked message ${messageId} seen`))
+        .catch((err) => {
+          log.warn(
+            `omadeus: failed to mark message ${messageId} seen: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+    }
+  };
+
+  const handleMessageNow = async (
+    inbound: OmadeusInboundMessage,
+    ackMessageIds: number[] = [inbound.messageId],
+  ) => {
     const isDirectMessage = inbound.subscribableKind === "direct";
     const senderId = String(inbound.fromReferenceId);
     const senderName = inbound.from;
@@ -130,6 +149,12 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
         target: senderId,
       });
       return;
+    }
+
+    // Committed to dispatching to the agent — mark the source message(s) seen.
+    // Never mark our own messages seen (the user can DM their own instance).
+    if (inbound.fromReferenceId !== selfReferenceId) {
+      markMessagesSeen(ackMessageIds);
     }
 
     let bodyForAgent = rawBody;
@@ -386,11 +411,14 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
         .join("\n");
       if (!combinedContent.trim()) return;
 
-      await handleMessageNow({
-        ...last,
-        content: combinedContent,
-        isMention: entries.some((e) => e.isMention),
-      });
+      await handleMessageNow(
+        {
+          ...last,
+          content: combinedContent,
+          isMention: entries.some((e) => e.isMention),
+        },
+        entries.map((e) => e.messageId),
+      );
     },
     onError: (err) => {
       runtime.error?.(`omadeus debounce flush failed: ${String(err)}`);

@@ -19,14 +19,14 @@ async function readJsonOrEmpty(res: Response): Promise<unknown> {
 
 export async function sendRoomMessage(
   opts: OmadeusApiOptions,
-  params: { roomId: number | string; body: string },
+  params: { roomId: number | string; body: string; temporaryId?: string },
 ): Promise<{ ok: boolean; message?: OmadeusMessage; error?: string }> {
   try {
     const res = await jaguarFetch(opts, `/rooms/${params.roomId}/messages`, {
       method: "SEND",
       body: JSON.stringify({
         body: params.body,
-        temporaryId: generateTemporaryId(),
+        temporaryId: params.temporaryId ?? generateTemporaryId(),
         links: "[]",
       }),
     });
@@ -68,6 +68,8 @@ export async function seeMessage(
 ): Promise<OmadeusMessage> {
   const res = await jaguarFetch(opts, `/messages/${params.messageId}`, {
     method: "SEE",
+    // The server requires a Content-Length header; an empty JSON body supplies one.
+    body: "{}",
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

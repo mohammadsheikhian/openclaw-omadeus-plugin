@@ -19,6 +19,7 @@ import type {
   OmadeusChannelConfig,
   OmadeusChannelView,
   OmadeusInboundEntityKind,
+  OmadeusInboundMentionPolicy,
   OmadeusOrganizationMember,
 } from "./types.js";
 import { OMADEUS_INBOUND_ENTITY_KINDS } from "./types.js";
@@ -249,36 +250,68 @@ async function promptCredentials(
   return { email, password };
 }
 
-async function promptSenderAllowlist(params: {
+/**
+ * Prompt for the set of users allowed to message this OpenClaw instance.
+ *
+ * This single allowlist governs direct messages, channels, and entity rooms.
+ * There is no "all users" option: only whitelisted members may message
+ * OpenClaw. The logged-in user is always added
+ * to the allowlist (and is excluded from the selectable list by the caller) so
+ * they can interact with their own OpenClaw. Self-authored echoes (the reply
+ * loop) are filtered earlier, at socket ingestion, by the SentMessageTracker —
+ * not by the inbound policy — so allowing yourself here cannot cause a loop.
+ */
+async function promptMessagingAllowlist(params: {
   prompter: WizardPrompter;
-  message: string;
   members: OmadeusOrganizationMember[];
+  selfReferenceId: number;
   existingReferenceIds?: number[];
-}): Promise<number[] | undefined> {
-  const { prompter, message, members, existingReferenceIds } = params;
+}): Promise<number[]> {
+  const { prompter, members, selfReferenceId, existingReferenceIds } = params;
+
+  let selected: number[] = [];
   if (members.length === 0) {
-    throw new Error("No organization members found.");
+    await prompter.note(
+      "No other organization members found. Only you will be able to message OpenClaw.",
+      "Omadeus messaging allowlist",
+    );
+  } else {
+    const memberReferenceIds = new Set(members.map((member) => member.referenceId));
+    const initialValues = (existingReferenceIds ?? [])
+      .filter((id) => id !== selfReferenceId && memberReferenceIds.has(id))
+      .map(String);
+    const chosen = await promptMultiSelect({
+      prompter,
+      message: "Which users do you want to be able to message this OpenClaw instance? (You are always allowed.)",
+      options: memberOptions(members),
+      initialValues,
+    });
+    selected = readReferenceIds(chosen);
   }
 
-  const mode = await prompter.select({
-    message,
-    options: [
-      { value: "all", label: "All users", hint: "No sender allowlist" },
-      { value: "specific", label: "Specific users", hint: "Select one or more users" },
-    ],
-    initialValue: existingReferenceIds && existingReferenceIds.length > 0 ? "specific" : "all",
-  });
-  if (mode === "all") {
-    return undefined;
-  }
+  // Always allow the logged-in user so they can message their own OpenClaw.
+  return Array.from(new Set([selfReferenceId, ...selected]));
+}
 
-  const selected = await promptMultiSelect({
-    prompter,
-    message: `${message} (specific users)`,
-    options: memberOptions(members),
-    initialValues: existingReferenceIds?.map(String),
+/**
+ * Ask whether an @mention is required to trigger OpenClaw in a given surface
+ * (channels or entity rooms). DMs never use this — you can't @mention in a DM.
+ */
+async function promptRequireMention(params: {
+  prompter: WizardPrompter;
+  surfaceLabel: string;
+  existing?: OmadeusInboundMentionPolicy;
+}): Promise<OmadeusInboundMentionPolicy> {
+  // Preserve an existing "outsideAllowlist" policy so rerunning onboarding does
+  // not force previously allowlisted users to start @mentioning OpenClaw.
+  if (params.existing === "outsideAllowlist") {
+    return "outsideAllowlist";
+  }
+  const required = await params.prompter.confirm({
+    message: `Require an @mention to trigger OpenClaw in ${params.surfaceLabel}?`,
+    initialValue: params.existing ? params.existing !== "never" : true,
   });
-  return readReferenceIds(selected);
+  return required ? "always" : "never";
 }
 
 async function promptEntityKindSelection(params: {
@@ -414,11 +447,17 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
     });
     const existingInbound = section.inbound;
 
-    const directSenderIds = await promptSenderAllowlist({
+    const allowedUserReferenceIds = await promptMessagingAllowlist({
       prompter,
-      message: "Which users can DM OpenClaw directly?",
       members,
-      existingReferenceIds: existingInbound?.direct?.allowedSenderReferenceIds,
+      selfReferenceId,
+      existingReferenceIds: Array.from(
+        new Set([
+          ...(existingInbound?.direct?.allowedSenderReferenceIds ?? []),
+          ...(existingInbound?.channels?.allowedSenderReferenceIds ?? []),
+          ...(existingInbound?.entities?.allowedSenderReferenceIds ?? []),
+        ]),
+      ),
     });
 
     const selectedChannels = await promptChannelSelection({
@@ -429,30 +468,32 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       existingChannelViewIds: existingInbound?.channels?.allowedChannelViewIds,
     });
 
-    const channelSenderIds =
+    // Channels reuse the same messaging allowlist as direct messages.
+    const channelSenderIds = selectedChannels.length > 0 ? allowedUserReferenceIds : undefined;
+    const channelRequireMention =
       selectedChannels.length > 0
-        ? await promptSenderAllowlist({
+        ? await promptRequireMention({
             prompter,
-            message: "Which users can trigger OpenClaw from allowed channels?",
-            members,
-            existingReferenceIds: existingInbound?.channels?.allowedSenderReferenceIds,
+            surfaceLabel: "allowed channels",
+            existing: existingInbound?.channels?.requireMention,
           })
-        : undefined;
+        : "never";
 
     const entityKinds = await promptEntityKindSelection({
       prompter,
       existingKinds: existingInbound?.entities?.allowedKinds,
     });
 
-    const entitySenderIds =
+    // Entity rooms reuse the same messaging allowlist as direct messages.
+    const entitySenderIds = entityKinds.length > 0 ? allowedUserReferenceIds : undefined;
+    const entityRequireMention =
       entityKinds.length > 0
-        ? await promptSenderAllowlist({
+        ? await promptRequireMention({
             prompter,
-            message: "Which users can trigger OpenClaw from entity rooms?",
-            members,
-            existingReferenceIds: existingInbound?.entities?.allowedSenderReferenceIds,
+            surfaceLabel: "entity rooms",
+            existing: existingInbound?.entities?.requireMention,
           })
-        : undefined;
+        : "never";
 
     const channelRoomIds = selectedChannels
       .flatMap((selectedChannel) => [
@@ -467,20 +508,29 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
 
     const senderSummary = (ids: number[] | undefined) =>
       ids && ids.length > 0 ? ids.join(", ") : "all users";
-    const entityKindSummary =
-      entityKinds.length > 0 ? entityKinds.join(", ") : "none (entity rooms disabled)";
+    const mentionSummary = (require: OmadeusInboundMentionPolicy) =>
+      require === "never"
+        ? "no @mention required"
+        : require === "outsideAllowlist"
+          ? "@mention required outside the allowlist"
+          : "@mention required";
 
     const channelSummary =
       selectedChannels.length > 0
-        ? `- Channels "${channelTitles}": rooms ${channelRoomIds.join(", ") || "(no room ids)"} from ${senderSummary(channelSenderIds)}; @mention not required in those rooms.`
+        ? `- Channels "${channelTitles}": rooms ${channelRoomIds.join(", ") || "(no room ids)"} from ${senderSummary(channelSenderIds)}; ${mentionSummary(channelRequireMention)}.`
         : "- Channels: disabled (none selected).";
+
+    const entitySummary =
+      entityKinds.length > 0
+        ? `- Entity rooms (${entityKinds.join(", ")}): ${senderSummary(entitySenderIds)}; ${mentionSummary(entityRequireMention)}.`
+        : "- Entity rooms: disabled (no room types selected).";
 
     await prompter.note(
       [
         `Inbound policy (Jaguar chat):`,
-        `- Direct messages: enabled for ${senderSummary(directSenderIds)} (no @mention required).`,
+        `- Direct messages: enabled for ${senderSummary(allowedUserReferenceIds)}.`,
         channelSummary,
-        `- Entity rooms (${entityKindSummary}): ${senderSummary(entitySenderIds)}; @mention required.`,
+        entitySummary,
       ].join("\n"),
       "Omadeus inbound policy",
     );
@@ -501,7 +551,7 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
             version: 1,
             direct: {
               enabled: true,
-              ...(directSenderIds ? { allowedSenderReferenceIds: directSenderIds } : {}),
+              allowedSenderReferenceIds: allowedUserReferenceIds,
               requireMention: "never",
             },
             channels: {
@@ -509,13 +559,13 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
               allowedRoomIds: channelRoomIds,
               allowedChannelViewIds: channelViewIds,
               ...(channelSenderIds ? { allowedSenderReferenceIds: channelSenderIds } : {}),
-              requireMention: "outsideAllowlist",
+              requireMention: channelRequireMention,
             },
             entities: {
               enabled: entityKinds.length > 0,
               allowedKinds: entityKinds,
               ...(entitySenderIds ? { allowedSenderReferenceIds: entitySenderIds } : {}),
-              requireMention: "always",
+              requireMention: entityRequireMention,
             },
           },
         },
