@@ -1,4 +1,4 @@
-export type OmadeusEnvironment = "production" | "staging" | "dev";
+export type OmadeusEnvironment = "production" | "staging" | "dev" | "milestone";
 
 export const OMADEUS_DEFAULT_ENVIRONMENT: OmadeusEnvironment = "dev";
 
@@ -23,6 +23,11 @@ export const OMADEUS_ENVIRONMENTS: Record<OmadeusEnvironment, OmadeusEnvironment
     label: "Dev",
     casUrl: "https://dev1-cas.rouztech.com",
     maestroUrl: "https://dev1-maestro.rouztech.com",
+  },
+  milestone: {
+    label: "Milestone",
+    casUrl: "https://milestone-cas.xeba.ir/",
+    maestroUrl: "https://milestone.xeba.ir/",
   },
 };
 
