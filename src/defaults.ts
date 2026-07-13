@@ -26,8 +26,8 @@ export const OMADEUS_ENVIRONMENTS: Record<OmadeusEnvironment, OmadeusEnvironment
   },
   milestone: {
     label: "Milestone",
-    casUrl: "https://milestone-cas.xeba.ir/",
-    maestroUrl: "https://milestone.xeba.ir/",
+    casUrl: "https://milestone-cas.xeba.ir",
+    maestroUrl: "https://milestone.xeba.ir",
   },
 };
 
