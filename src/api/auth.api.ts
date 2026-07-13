@@ -167,9 +167,10 @@ export async function listOrganizationMembers(params: {
   const url = `${maestroUrl}/dolphin/apiv1/organizations/${organizationId}/members`;
   const res = await omadeusFetch("Omadeus list organization members", url, {
     method: "LIST",
+    // nanohttp requires Content-Length; empty body makes fetch send Content-Length: 0
+    body: "",
     headers: {
       Authorization: `Bearer ${sessionToken}`,
-      "Content-Type": "application/json;charset=UTF-8",
     },
   });
   if (!res.ok) {

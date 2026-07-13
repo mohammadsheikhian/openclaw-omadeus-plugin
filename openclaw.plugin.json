@@ -8,7 +8,7 @@
       "enabled": { "type": "boolean" },
       "environment": {
         "type": "string",
-        "enum": ["production", "staging", "dev"]
+        "enum": ["production", "staging", "dev", "milestone"]
       },
       "email": { "type": "string" },
       "password": { "type": "string" },
@@ -16,7 +16,7 @@
       "sessionToken": { "type": "string" },
       "sessionTokenEnvironment": {
         "type": "string",
-        "enum": ["production", "staging", "dev"]
+        "enum": ["production", "staging", "dev", "milestone"]
       },
       "inbound": {
         "type": "object",
@@ -100,7 +100,7 @@
           "enabled": { "type": "boolean" },
           "environment": {
             "type": "string",
-            "enum": ["production", "staging", "dev"]
+            "enum": ["production", "staging", "dev", "milestone"]
           },
           "email": { "type": "string" },
           "password": { "type": "string" },
@@ -108,7 +108,7 @@
           "sessionToken": { "type": "string" },
           "sessionTokenEnvironment": {
             "type": "string",
-            "enum": ["production", "staging", "dev"]
+            "enum": ["production", "staging", "dev", "milestone"]
           },
           "inbound": {
             "type": "object",

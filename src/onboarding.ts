@@ -15,7 +15,6 @@ import {
   resolveOmadeusEnvironment,
   type OmadeusEnvironment,
 } from "./defaults.js";
-import { formatMemberLabel } from "./member-resolve.js";
 import type {
   OmadeusChannelConfig,
   OmadeusChannelView,
@@ -179,12 +178,6 @@ async function promptChannelSelection(params: {
   return channels.filter((item) => selected.includes(String(item.id)));
 }
 
-function memberHint(member: OmadeusOrganizationMember): string | undefined {
-  const fullName = `${member.firstName ?? ""} ${member.lastName ?? ""}`.trim();
-  const parts = [fullName, member.email?.trim(), `ref:${member.referenceId}`].filter(Boolean);
-  return parts.length > 0 ? parts.join(" | ") : undefined;
-}
-
 async function promptMultiSelect(params: {
   prompter: WizardPrompter;
   message: string;
@@ -198,36 +191,18 @@ async function promptMultiSelect(params: {
   });
 }
 
-async function loadSelectableMembers(params: {
+const OPENCLAW_BOT_EMAIL = "openclaw@xeba.tech";
+
+/** Find the OpenClaw bot member of the organization by its well-known email. */
+async function resolveOpenclawBotMember(params: {
   maestroUrl: string;
   sessionToken: string;
   organizationId: number;
-  excludeReferenceIds?: number[];
-}): Promise<OmadeusOrganizationMember[]> {
-  const excluded = new Set(params.excludeReferenceIds ?? []);
-  return (
-    await listOrganizationMembers({
-      maestroUrl: params.maestroUrl,
-      sessionToken: params.sessionToken,
-      organizationId: params.organizationId,
-    })
-  )
-    .filter((member) => member.isSystem !== true && !excluded.has(member.referenceId))
-    .sort((a, b) => formatMemberLabel(a).localeCompare(formatMemberLabel(b)));
-}
-
-function memberOptions(members: OmadeusOrganizationMember[]): SelectOption[] {
-  return members.map((member) => ({
-    value: String(member.referenceId),
-    label: formatMemberLabel(member),
-    hint: memberHint(member),
-  }));
-}
-
-function readReferenceIds(values: string[]): number[] {
-  return values
-    .map((value) => Number(value))
-    .filter((value) => Number.isInteger(value) && value > 0);
+}): Promise<OmadeusOrganizationMember | undefined> {
+  const members = await listOrganizationMembers(params);
+  return members.find(
+    (member) => member.email?.trim().toLowerCase() === OPENCLAW_BOT_EMAIL,
+  );
 }
 
 async function promptCredentials(
@@ -249,49 +224,6 @@ async function promptCredentials(
     }),
   ).trim();
   return { email, password };
-}
-
-/**
- * Prompt for the set of users allowed to message this OpenClaw instance.
- *
- * This single allowlist governs direct messages, channels, and entity rooms.
- * There is no "all users" option: only whitelisted members may message
- * OpenClaw. The logged-in user is always added
- * to the allowlist (and is excluded from the selectable list by the caller) so
- * they can interact with their own OpenClaw. Self-authored echoes (the reply
- * loop) are filtered earlier, at socket ingestion, by the SentMessageTracker —
- * not by the inbound policy — so allowing yourself here cannot cause a loop.
- */
-async function promptMessagingAllowlist(params: {
-  prompter: WizardPrompter;
-  members: OmadeusOrganizationMember[];
-  selfReferenceId: number;
-  existingReferenceIds?: number[];
-}): Promise<number[]> {
-  const { prompter, members, selfReferenceId, existingReferenceIds } = params;
-
-  let selected: number[] = [];
-  if (members.length === 0) {
-    await prompter.note(
-      "No other organization members found. Only you will be able to message OpenClaw.",
-      "Omadeus messaging allowlist",
-    );
-  } else {
-    const memberReferenceIds = new Set(members.map((member) => member.referenceId));
-    const initialValues = (existingReferenceIds ?? [])
-      .filter((id) => id !== selfReferenceId && memberReferenceIds.has(id))
-      .map(String);
-    const chosen = await promptMultiSelect({
-      prompter,
-      message: "Which users do you want to be able to message this OpenClaw instance? (You are always allowed.)",
-      options: memberOptions(members),
-      initialValues,
-    });
-    selected = readReferenceIds(chosen);
-  }
-
-  // Always allow the logged-in user so they can message their own OpenClaw.
-  return Array.from(new Set([selfReferenceId, ...selected]));
 }
 
 /**
@@ -440,29 +372,28 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       throw new Error("Authentication did not return an Omadeus member reference ID.");
     }
 
-    const members = await loadSelectableMembers({
-      maestroUrl,
-      sessionToken,
-      organizationId,
-      excludeReferenceIds: [selfReferenceId],
-    });
-
     await configureOpenClawBot({ maestroUrl, sessionToken });
 
     const existingInbound = section.inbound;
 
-    const allowedUserReferenceIds = await promptMessagingAllowlist({
-      prompter,
-      members,
-      selfReferenceId,
-      existingReferenceIds: Array.from(
-        new Set([
-          ...(existingInbound?.direct?.allowedSenderReferenceIds ?? []),
-          ...(existingInbound?.channels?.allowedSenderReferenceIds ?? []),
-          ...(existingInbound?.entities?.allowedSenderReferenceIds ?? []),
-        ]),
-      ),
+    const openclawMember = await resolveOpenclawBotMember({
+      maestroUrl,
+      sessionToken,
+      organizationId,
     });
+    if (!openclawMember) {
+      await prompter.note(
+        `OpenClaw bot user (${OPENCLAW_BOT_EMAIL}) not found in this organization. Only you will be able to message this OpenClaw instance.`,
+        "Omadeus messaging allowlist",
+      );
+    }
+    // The logged-in user and the OpenClaw bot are the only allowed senders.
+    const allowedUserReferenceIds = Array.from(
+      new Set([
+        selfReferenceId,
+        ...(openclawMember ? [openclawMember.referenceId] : []),
+      ]),
+    );
 
     const selectedChannels = await promptChannelSelection({
       prompter,

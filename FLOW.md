@@ -104,7 +104,7 @@ Setup is split across three files:
 
 - `src/setup-core.ts` validates basic setup input and writes `channels.omadeus`.
 - `src/setup-surface.ts` exports `omadeusSetupWizard`.
-- `src/onboarding.ts` runs the interactive setup wizard, auth checks, organization/member lookup, and channel selection.
+- `src/onboarding.ts` runs the interactive setup wizard, auth checks, OpenClaw bot member lookup (by `openclaw@xeba.tech`), and channel selection.
 
 Supported setup environment variables:
 

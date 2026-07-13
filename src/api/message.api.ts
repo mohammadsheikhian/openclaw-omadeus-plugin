@@ -28,6 +28,10 @@ export async function sendRoomMessage(
         body: params.body,
         temporaryId: params.temporaryId ?? generateTemporaryId(),
         links: "[]",
+        // Jaguar attributes the message to the OpenClaw bot when the sender
+        // is a configured member posting into their own OpenClaw direct;
+        // ignored everywhere else.
+        asOpenclaw: true,
       }),
     });
     if (!res.ok) {
