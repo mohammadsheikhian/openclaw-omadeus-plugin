@@ -113,51 +113,113 @@ export async function searchNuggetRowsByTextQuery(
 }
 
 /**
- * Picks a row whose private/public/shared task room id matches a Jaguar `roomId`.
+ * All keys on a row whose numeric value equals `roomId` and that look like a room reference
+ * (`privateRoomId`, `publicRoomId`, `sharedRoomId`, `threadRoomId`, `roomId`, …). Used both to
+ * match a row and to diagnose lookups where the room id lives under an unexpected field name.
+ */
+export function roomIdMatchKeys(row: Record<string, unknown>, roomId: number): string[] {
+  const keys: string[] = [];
+  for (const key of Object.keys(row)) {
+    if (!/room/i.test(key)) {
+      continue;
+    }
+    if (readNumberField(row, key) === roomId) {
+      keys.push(key);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Dolphin SEARCH on nuggetviews narrowed to an **exact `title`** via query param. The `{ query }`
+ * body is still required (omitting it 400s "Query Parameter Not In Form Or Query String"); the
+ * `?title=` param is what filters to the exact match. A fuzzy title like "test1" can otherwise return
+ * 999+ rows and bury the target past `take`. Remaining same-title rows are disambiguated by room id.
+ */
+export async function searchNuggetRowsByExactTitle(
+  opts: OmadeusApiOptions,
+  params: { title: string; take?: number; signal?: AbortSignal },
+): Promise<Record<string, unknown>[]> {
+  const title = params.title.trim();
+  if (!title) {
+    return [];
+  }
+  const search = new URLSearchParams();
+  search.set("take", String(params.take ?? 100));
+  search.set("title", title);
+  const res = await dolphinFetch(opts, `/nuggetviews?${search.toString()}`, {
+    method: "SEARCH",
+    body: JSON.stringify({query: title}),
+    signal: params.signal,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Omadeus nugget title search failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  const payload = (await res.json()) as unknown;
+  return extractRows(payload);
+}
+
+/**
+ * Picks a row whose task room id matches a Jaguar `roomId`. Matches any `*room*` numeric field
+ * (private/public/shared/thread/…), not just a hardcoded three, so newly-shaped rows still resolve.
  */
 export function findNuggetRowByRoomId(
   rows: Record<string, unknown>[],
   roomId: number,
 ): Record<string, unknown> | undefined {
-  for (const row of rows) {
-    for (const key of ["privateRoomId", "publicRoomId", "sharedRoomId"] as const) {
-      if (readNumberField(row, key) === roomId) {
-        return row;
-      }
-    }
-  }
-  return undefined;
+  return rows.find((row) => roomIdMatchKeys(row, roomId).length > 0);
 }
 
 export type FindNuggetByTaskRoomParams = {
   roomId: number;
   roomName?: string | null;
   signal?: AbortSignal;
+  /** Optional diagnostics sink; receives one line per attempted search query. */
+  log?: (msg: string, extra?: Record<string, unknown>) => void;
 };
 
 /**
- * Resolve the nugget/task row for a Jaguar Task or Nugget **chat room** by matching
- * `privateRoomId` / `publicRoomId` / `sharedRoomId` to `roomId` in Dolphin `nuggetviews` search results.
+ * Resolve the nugget/task row for a Jaguar Task or Nugget **chat room** by matching any `*room*`
+ * id field to `roomId` in Dolphin `nuggetviews` search results.
  * Tries search by `roomName` first (usually matches the task title), then by the numeric `roomId` as text.
  */
 export async function findNuggetByTaskChannelRoom(
   opts: OmadeusApiOptions,
   params: FindNuggetByTaskRoomParams,
 ): Promise<Record<string, unknown> | null> {
-  const { roomId, roomName, signal } = params;
-  const tryQueries: string[] = [];
-  if (typeof roomName === "string" && roomName.trim()) {
-    tryQueries.push(roomName.trim());
+  const { roomId, roomName, signal, log } = params;
+  const trimmedName = typeof roomName === "string" ? roomName.trim() : "";
+
+  // Ordered attempts, best-first. Exact `title=` filtering avoids the fuzzy 999+ result set that
+  // buries the target past `take`; searching the numeric room id as text is a last-resort fallback
+  // (and the only option when there is no room name to search by).
+  const attempts: { label: string; run: () => Promise<Record<string, unknown>[]> }[] = [];
+  if (trimmedName) {
+    attempts.push({
+      label: `title="${trimmedName}"`,
+      run: () => searchNuggetRowsByExactTitle(opts, { title: trimmedName, take: 100, signal }),
+    });
   }
-  tryQueries.push(String(roomId));
-  const tried = new Set<string>();
-  for (const query of tryQueries) {
-    if (tried.has(query)) {
-      continue;
-    }
-    tried.add(query);
-    const rows = await searchNuggetRowsByTextQuery(opts, { query, take: 100, signal });
+  attempts.push({
+    label: `query="${roomId}"`,
+    run: () => searchNuggetRowsByTextQuery(opts, { query: String(roomId), take: 100, signal }),
+  });
+
+  for (const attempt of attempts) {
+    const rows = await attempt.run();
     const match = findNuggetRowByRoomId(rows, roomId);
+    if (log) {
+      // Which fields (if any) across returned rows carry the target roomId — surfaces the case where
+      // the row IS in the results but its room id lives under an unexpected key.
+      const roomKeysSeen = Array.from(
+        new Set(rows.flatMap((row) => roomIdMatchKeys(row, roomId))),
+      );
+      log(
+        `omadeus nugget-room lookup ${attempt.label} rows=${rows.length} matched=${!!match}`,
+        { roomId, roomKeysSeen },
+      );
+    }
     if (match) {
       return match;
     }
