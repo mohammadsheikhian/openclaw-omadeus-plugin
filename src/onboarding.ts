@@ -1,6 +1,7 @@
 import type { ChannelSetupWizard, OpenClawConfig, WizardPrompter } from "openclaw/plugin-sdk/setup";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/setup";
 import {
+  configureOpenClawBot,
   listOrganizationMembers,
   listOrganizations,
 } from "./api/auth.api.js";
@@ -445,6 +446,9 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       organizationId,
       excludeReferenceIds: [selfReferenceId],
     });
+
+    await configureOpenClawBot({ maestroUrl, sessionToken });
+
     const existingInbound = section.inbound;
 
     const allowedUserReferenceIds = await promptMessagingAllowlist({

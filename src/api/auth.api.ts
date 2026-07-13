@@ -178,3 +178,23 @@ export async function listOrganizationMembers(params: {
   }
   return (await res.json()) as OmadeusOrganizationMember[];
 }
+
+export async function configureOpenClawBot(params: {
+  maestroUrl: string;
+  sessionToken: string;
+}): Promise<void> {
+  const { maestroUrl, sessionToken } = params;
+  const url = `${maestroUrl}/dolphin/apiv1/settings/bots/openclaw`;
+  const res = await omadeusFetch("Omadeus configure OpenClaw bot", url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${sessionToken}`,
+      "Content-Type": "application/json;charset=UTF-8",
+    },
+    body: JSON.stringify({ isOpenclawConfigured: true }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Omadeus configure OpenClaw bot failed (${res.status}): ${text}`);
+  }
+}
