@@ -62,6 +62,33 @@ function senderAllowed(
   return allowed.includes(fromReferenceId);
 }
 
+/**
+ * Admission for a **direct** room. Directs are keyed by the counterparty (the other
+ * participant), not by the message sender: because OpenClaw runs as an Omadeus user, a
+ * DM the operator sends from that shared account arrives with `fromReferenceId === self`
+ * and would slip past a sender-based allowlist (see the loop this caused with an
+ * unlisted bot account). We therefore gate on the counterparty instead.
+ *
+ * When the counterparty can't be resolved (membership lookup failed) we fall back to the
+ * sender check so a transient API failure doesn't silently drop every DM.
+ */
+function directAllowed(params: {
+  allowed: number[] | undefined;
+  counterpartyReferenceId: number | undefined;
+  fromReferenceId: number;
+  selfReferenceId: number;
+}): boolean {
+  const { allowed, counterpartyReferenceId, fromReferenceId, selfReferenceId } = params;
+  if (!allowed || allowed.length === 0) return true;
+  // Gate on the counterparty only when there is a distinct one. A self-DM (counterparty
+  // is self, or unresolved) falls back to the sender check so the operator can always
+  // reach their own OpenClaw.
+  if (counterpartyReferenceId !== undefined && counterpartyReferenceId !== selfReferenceId) {
+    return allowed.includes(counterpartyReferenceId);
+  }
+  return senderAllowed(allowed, fromReferenceId, selfReferenceId);
+}
+
 function channelGeoAllowed(params: {
   roomId: number;
   channelViewId?: number;
@@ -124,17 +151,24 @@ function mentionRequired(params: {
 /**
  * Evaluate whether a normalized Jaguar inbound should be dispatched to OpenClaw.
  *
- * The logged-in user (`selfReferenceId`) is always treated as an allowed sender
- * so they can message their own OpenClaw even if the stored allowlist predates
- * them. Self-authored *echoes* (the reply loop) are filtered earlier, at socket
- * ingestion, by the {@link SentMessageTracker} — not here.
+ * The logged-in user (`selfReferenceId`) is treated as an allowed sender for
+ * channels, entities, and self-DMs so they can reach their own OpenClaw even if
+ * the stored allowlist predates them. In a **direct with a distinct counterparty**
+ * the opposite holds: a self-authored message is the operator talking to that other
+ * person and is dropped here. Self-authored *echoes* of OpenClaw's own replies are
+ * filtered even earlier, at socket ingestion, by the {@link SentMessageTracker}.
  */
 export function evaluateOmadeusInboundPolicy(params: {
   inbound: OmadeusInboundMessage;
   omadeusCfg: OmadeusChannelConfig | undefined;
   selfReferenceId: number;
+  /**
+   * Resolved counterparty of a direct room (the non-self member). Only meaningful for
+   * `subscribableKind === "direct"`. Undefined when unknown/unresolved.
+   */
+  directCounterpartyReferenceId?: number;
 }): InboundPolicyDecision {
-  const { inbound, omadeusCfg, selfReferenceId } = params;
+  const { inbound, omadeusCfg, selfReferenceId, directCounterpartyReferenceId } = params;
 
   const policy = mergePolicy(omadeusCfg);
   const surface = surfaceForKind(inbound.subscribableKind);
@@ -143,13 +177,39 @@ export function evaluateOmadeusInboundPolicy(params: {
     if (!policy.direct.enabled) {
       return { allow: false, reason: "direct_disabled", details: { surface } };
     }
+    // A direct is a 1:1 with the counterparty. Because OpenClaw shares the operator's
+    // Omadeus account, a DM the operator types to that counterparty arrives with
+    // `fromReferenceId === self` — that is the operator talking TO the other person, not a
+    // request for OpenClaw, so it must never be answered. (A self-DM has no distinct
+    // counterparty; it is the operator messaging their own OpenClaw and still passes below.)
+    const hasDistinctCounterparty =
+      directCounterpartyReferenceId !== undefined &&
+      directCounterpartyReferenceId !== selfReferenceId;
+    if (inbound.fromReferenceId === selfReferenceId && hasDistinctCounterparty) {
+      return {
+        allow: false,
+        reason: "direct_self_authored",
+        details: {
+          fromReferenceId: inbound.fromReferenceId,
+          counterpartyReferenceId: directCounterpartyReferenceId,
+        },
+      };
+    }
     if (
-      !senderAllowed(policy.direct.allowedSenderReferenceIds, inbound.fromReferenceId, selfReferenceId)
+      !directAllowed({
+        allowed: policy.direct.allowedSenderReferenceIds,
+        counterpartyReferenceId: directCounterpartyReferenceId,
+        fromReferenceId: inbound.fromReferenceId,
+        selfReferenceId,
+      })
     ) {
       return {
         allow: false,
-        reason: "direct_sender_not_allowed",
-        details: { fromReferenceId: inbound.fromReferenceId },
+        reason: "direct_counterparty_not_allowed",
+        details: {
+          fromReferenceId: inbound.fromReferenceId,
+          counterpartyReferenceId: directCounterpartyReferenceId,
+        },
       };
     }
     const req = policy.direct.requireMention ?? "never";

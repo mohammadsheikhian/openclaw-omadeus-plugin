@@ -13,6 +13,7 @@ import {
   searchNuggetByNumber,
 } from "./api/nugget.api.js";
 import { seeMessage } from "./api/message.api.js";
+import { createDirectCounterpartyResolver } from "./direct-resolver.js";
 import {
   appendNuggetContextForTaskOrNuggetRoom,
   appendNuggetLookupContextForAgent,
@@ -79,6 +80,14 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     channel: "omadeus",
   });
 
+  // Resolves the counterparty of a direct room so admission is gated on WHO the DM is
+  // with, not on the sender (the operator shares the bot's account). See direct-resolver.ts.
+  const directResolver = createDirectCounterpartyResolver({
+    apiOpts: outboundDeps.apiOpts,
+    selfReferenceId,
+    log,
+  });
+
   /** Mark inbound messages as seen in Omadeus (fire-and-forget). */
   const markMessagesSeen = (messageIds: number[]) => {
     for (const messageId of messageIds) {
@@ -114,10 +123,15 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       return;
     }
 
+    const directCounterpartyReferenceId = isDirectMessage
+      ? await directResolver.resolve(inbound.roomId)
+      : undefined;
+
     const policyDecision = evaluateOmadeusInboundPolicy({
       inbound,
       omadeusCfg,
       selfReferenceId,
+      directCounterpartyReferenceId,
     });
     if (!policyDecision.allow) {
       log.info("omadeus: dropped message by inbound policy", {
