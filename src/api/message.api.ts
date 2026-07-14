@@ -28,6 +28,7 @@ export async function sendRoomMessage(
         body: params.body,
         temporaryId: params.temporaryId ?? generateTemporaryId(),
         links: "[]",
+        asOpenclaw: true,
       }),
     });
     if (!res.ok) {

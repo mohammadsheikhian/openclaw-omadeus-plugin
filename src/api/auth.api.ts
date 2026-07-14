@@ -162,14 +162,18 @@ export async function listOrganizationMembers(params: {
   maestroUrl: string;
   sessionToken: string;
   organizationId: number;
+  email?: string;
 }): Promise<OmadeusOrganizationMember[]> {
-  const { maestroUrl, sessionToken, organizationId } = params;
-  const url = `${maestroUrl}/dolphin/apiv1/organizations/${organizationId}/members`;
+  const { maestroUrl, sessionToken, organizationId, email } = params;
+  const search = new URLSearchParams();
+  if (email) search.set("email", email);
+  const qs = search.toString();
+  const url = `${maestroUrl}/dolphin/apiv1/organizations/${organizationId}/members${qs ? `?${qs}` : ""}`;
   const res = await omadeusFetch("Omadeus list organization members", url, {
     method: "LIST",
     headers: {
       Authorization: `Bearer ${sessionToken}`,
-      "Content-Type": "application/json;charset=UTF-8",
+      "Accept": "application/json, text/plain, */*",
     },
   });
   if (!res.ok) {
@@ -177,4 +181,24 @@ export async function listOrganizationMembers(params: {
     throw new Error(`Omadeus list organization members failed (${res.status}): ${text}`);
   }
   return (await res.json()) as OmadeusOrganizationMember[];
+}
+
+export async function configureOpenClawBot(params: {
+  maestroUrl: string;
+  sessionToken: string;
+}): Promise<void> {
+  const { maestroUrl, sessionToken } = params;
+  const url = `${maestroUrl}/dolphin/apiv1/settings/bots/openclaw`;
+  const res = await omadeusFetch("Omadeus configure OpenClaw bot", url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${sessionToken}`,
+      "Content-Type": "application/json;charset=UTF-8",
+    },
+    body: JSON.stringify({ isOpenclawConfigured: true }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Omadeus configure OpenClaw bot failed (${res.status}): ${text}`);
+  }
 }
