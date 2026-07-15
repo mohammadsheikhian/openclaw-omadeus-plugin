@@ -222,6 +222,42 @@ export async function appendNuggetLookupContextForAgent(
 }
 
 /**
+ * Signals that a message in a Task/Nugget room actually wants this thread's live Omadeus
+ * data (status, ownership, timeline, sprint/phase, why-delayed, summary, …).
+ *
+ * This gate is intentionally opt-in: plain chatter ("Hello?", "thanks", "can you help me
+ * write an email") should NOT pull the heavy nugget payload, because that payload carries an
+ * imperative "answer the user with this" instruction that derails replies to unrelated messages.
+ */
+const TASK_ROOM_CONTEXT_PATTERNS: RegExp[] = [
+  // Explicit reference to the current item ("this nugget", "the task", "this thread", …).
+  /\b(this|the|these|that)\s+(nugget|task|thread|item|one|bug|issue|ticket|work|sprint|phase|stage|project|release)\b/i,
+  // Omadeus domain vocabulary anywhere in the message.
+  /\b(nugget|sprint|phase|stage|assignee|assigned|assignment|owner|ownership|tempo|overdue|at[-\s]?risk|delayed|blocked|due\s*date|deadline|priority|estimate[sd]?|maestro|triage|workflow|backlog)\b/i,
+  // Status / progress / summary intents.
+  /\b(status|summary|summari[sz]e|progress|standup|recap)\b/i,
+  // "who is working / assigned / responsible / the owner / the lead …"
+  /\bwho(?:'s|\s+is|\s+are)?\b[\s\S]*\b(working|assigned|responsible|owner|lead|on\s+this|on\s+it)\b/i,
+  // "why is this delayed / late / stuck / blocked / at risk / behind / overdue"
+  /\bwhy\b[\s\S]*\b(delayed|late|stuck|blocked|at[-\s]?risk|behind|overdue|stalled)\b/i,
+  // "when is this due / the deadline"
+  /\bwhen\b[\s\S]*\b(due|deadline|ship|complete[d]?|finish)\b/i,
+];
+
+/**
+ * Whether an inbound message in a Task/Nugget Jaguar room should pull that room's live Dolphin
+ * data. Returns false for empty bodies, acknowledgements, and general chatter unrelated to the
+ * work item, so those are answered without the (imperative) nugget payload.
+ */
+export function messageNeedsTaskRoomNuggetContext(rawBody: string): boolean {
+  const body = rawBody.trim();
+  if (!body) {
+    return false;
+  }
+  return TASK_ROOM_CONTEXT_PATTERNS.some((pattern) => pattern.test(body));
+}
+
+/**
  * Enriches a Task or Nugget **Jaguar room** with Dolphin data matched by this chat's `roomId`, so the
  * agent can answer "status" without a bare `N###` in the message.
  */

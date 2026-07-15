@@ -5,11 +5,19 @@ import {
   type OpenClawConfig,
   type RuntimeEnv,
 } from "../runtime-api.js";
-import { createNugget, findNuggetByTaskChannelRoom, resolveTaskChannelRoomId, searchNuggetByNumber } from "./api/nugget.api.js";
+import {
+  createNugget,
+  findNuggetByTaskChannelRoom,
+  readNuggetNumber,
+  resolveTaskChannelRoomId,
+  searchNuggetByNumber,
+} from "./api/nugget.api.js";
 import { seeMessage } from "./api/message.api.js";
+import { createDirectCounterpartyResolver } from "./direct-resolver.js";
 import {
   appendNuggetContextForTaskOrNuggetRoom,
   appendNuggetLookupContextForAgent,
+  messageNeedsTaskRoomNuggetContext,
   parseChannelTaskCreateIntent,
   parseNuggetLookupIntent,
   parseRecurringScheduleIntent,
@@ -53,17 +61,6 @@ function buildOmadeusEntityRoomContextLine(kind: string): string {
   return `This chat is an **Omadeus ${label}** room (${SK} \`${kind}\`). User questions refer to that Omadeus ${label} in this thread — not an OpenClaw \"session id\" for it.`;
 }
 
-function shouldSkipTaskRoomNuggetFetch(rawBody: string): boolean {
-  const t = rawBody.trim();
-  if (!t) {
-    return true;
-  }
-  if (/^(ok|k|thanks?|thank you|ty|sounds good|got it|yes|yep|no|nope)\s*!*\.?$/i.test(t)) {
-    return true;
-  }
-  return false;
-}
-
 export type OmadeusMessageHandlerDeps = {
   cfg: OpenClawConfig;
   runtime: RuntimeEnv;
@@ -81,6 +78,14 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
   const inboundDebounceMs = core.channel.debounce.resolveInboundDebounceMs({
     cfg,
     channel: "omadeus",
+  });
+
+  // Resolves the counterparty of a direct room so admission is gated on WHO the DM is
+  // with, not on the sender (the operator shares the bot's account). See direct-resolver.ts.
+  const directResolver = createDirectCounterpartyResolver({
+    apiOpts: outboundDeps.apiOpts,
+    selfReferenceId,
+    log,
   });
 
   /** Mark inbound messages as seen in Omadeus (fire-and-forget). */
@@ -103,6 +108,11 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     ackMessageIds: number[] = [inbound.messageId],
   ) => {
     const isDirectMessage = inbound.subscribableKind === "direct";
+    // Task/Nugget/Project/… Jaguar rooms are 1:1-style threads with the bot. A message only
+    // reaches dispatch here after the inbound policy has already enforced any mention requirement,
+    // so anything that arrives is addressed to the bot and must get a reply — treat it like a DM.
+    const isEntityRoom =
+      !isDirectMessage && OMADEUS_INBOUND_ENTITY_KIND_SET.has(String(inbound.subscribableKind));
     const senderId = String(inbound.fromReferenceId);
     const senderName = inbound.from;
     const roomId = String(inbound.roomId);
@@ -113,10 +123,15 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       return;
     }
 
+    const directCounterpartyReferenceId = isDirectMessage
+      ? await directResolver.resolve(inbound.roomId)
+      : undefined;
+
     const policyDecision = evaluateOmadeusInboundPolicy({
       inbound,
       omadeusCfg,
       selfReferenceId,
+      directCounterpartyReferenceId,
     });
     if (!policyDecision.allow) {
       log.info("omadeus: dropped message by inbound policy", {
@@ -233,13 +248,25 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       }
     }
 
+    // Only enrich with (or reference) this room's live entity when the message actually asks about
+    // the work item. Plain chatter ("Hello?", "thanks") must reach the model clean, so it reliably
+    // just replies instead of being derailed by imperative data / session-key framing.
+    const needsEntityContext = messageNeedsTaskRoomNuggetContext(rawBody);
+
     const isTaskOrNuggetRoom =
       !isDirectMessage && (inbound.subscribableKind === "task" || inbound.subscribableKind === "nugget");
-    if (isTaskOrNuggetRoom && !nuggetIntent && !createIntent && !shouldSkipTaskRoomNuggetFetch(rawBody)) {
+    if (isTaskOrNuggetRoom && !nuggetIntent && !createIntent && needsEntityContext) {
       try {
         const nugget = await findNuggetByTaskChannelRoom(outboundDeps.apiOpts, {
           roomId: inbound.roomId,
           roomName: inbound.roomName,
+          log: (msg, extra) => log.info(msg, extra),
+        });
+        log.info("omadeus: task-room nugget resolved", {
+          roomId: inbound.roomId,
+          roomName: inbound.roomName,
+          matched: !!nugget,
+          nuggetNumber: nugget ? (readNuggetNumber(nugget) ?? null) : null,
         });
         bodyForAgent = await appendNuggetContextForTaskOrNuggetRoom(
           bodyForAgent,
@@ -276,7 +303,9 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
 
     // Omadeus entity rooms (Jaguar subscribableKind): see OmadeusInboundEntityKind,
     // OMADEUS_INBOUND_ENTITY_KINDS. Models conflate "task" with OpenClaw and invent `task/<title>` keys.
-    if (!isDirectMessage && OMADEUS_INBOUND_ENTITY_KIND_SET.has(String(inbound.subscribableKind))) {
+    // Only append this disambiguation when the message is actually about the entity/its status/session;
+    // for a bare greeting it is noise that pushes the model toward internal-session behavior instead of a reply.
+    if (isEntityRoom && needsEntityContext) {
       const entityLine = buildOmadeusEntityRoomContextLine(String(inbound.subscribableKind));
       bodyForAgent = `${bodyForAgent}\n\n[OpenClaw] ${entityLine} \`session_status\` is only for **OpenClaw** gateway session state (model/usage, etc.); for that, use this key or \`current\`: ${route.sessionKey} — never \`task/\` + a title as a session key.`;
     }
@@ -332,7 +361,7 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       Provider: "omadeus" as const,
       Surface: "omadeus" as const,
       Timestamp: inbound.timestamp ?? Date.now(),
-      WasMentioned: isDirectMessage || inbound.isMention,
+      WasMentioned: isDirectMessage || isEntityRoom || inbound.isMention,
       CommandAuthorized: commandGate.commandAuthorized,
       OriginatingChannel: "omadeus" as const,
       OriginatingTo: omadeusTo,

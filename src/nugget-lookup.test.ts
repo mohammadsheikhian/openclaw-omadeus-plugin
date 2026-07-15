@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   appendNuggetLookupContextForAgent,
+  messageNeedsTaskRoomNuggetContext,
   parseChannelTaskCreateIntent,
   parseNuggetLookupIntent,
   parseRecurringScheduleIntent,
@@ -33,6 +34,40 @@ describe("parseNuggetLookupIntent", () => {
   it("ignores unrelated text", () => {
     expect(parseNuggetLookupIntent("hello team")).toBeNull();
     expect(parseNuggetLookupIntent("nugget someday maybe")).toBeNull();
+  });
+});
+
+describe("messageNeedsTaskRoomNuggetContext", () => {
+  it("triggers on questions about this work item", () => {
+    for (const q of [
+      "What is the status of this nugget?",
+      "Who is working on this?",
+      "Who is assigned to the phases?",
+      "Why is this nugget delayed?",
+      "Why is this at risk?",
+      "Give me a summary of this nugget",
+      "Give me a summary of this",
+      "What sprint does this nugget belong to?",
+      "When is this due?",
+      "who's the owner",
+    ]) {
+      expect(messageNeedsTaskRoomNuggetContext(q), q).toBe(true);
+    }
+  });
+
+  it("skips greetings, acknowledgements, and unrelated chatter", () => {
+    for (const q of [
+      "Hello?",
+      "hi there",
+      "thanks!",
+      "ok",
+      "sounds good",
+      "Can you help me write an email?",
+      "",
+      "   ",
+    ]) {
+      expect(messageNeedsTaskRoomNuggetContext(q), q).toBe(false);
+    }
   });
 });
 

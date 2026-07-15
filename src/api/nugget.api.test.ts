@@ -40,6 +40,17 @@ describe("findNuggetRowByRoomId", () => {
     expect(findNuggetRowByRoomId(rows, 999)).toEqual(rows[0]);
     expect(findNuggetRowByRoomId(rows, 0)).toBeUndefined();
   });
+
+  it("matches any *room* id field, including string values and unexpected keys", () => {
+    const rows = [
+      { number: 4, threadRoomId: 117_236 },
+      { number: 5, privateRoomId: "222" },
+    ] as Record<string, unknown>[];
+    expect(findNuggetRowByRoomId(rows, 117_236)).toEqual(rows[0]);
+    expect(findNuggetRowByRoomId(rows, 222)).toEqual(rows[1]);
+    // Non-room numeric fields must not match, even when the value is equal.
+    expect(findNuggetRowByRoomId([{ number: 117_236 }], 117_236)).toBeUndefined();
+  });
 });
 
 describe("resolveTaskChannelRoomId", () => {
