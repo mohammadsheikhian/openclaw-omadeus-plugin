@@ -21,8 +21,8 @@ export const OMADEUS_ENVIRONMENTS: Record<OmadeusEnvironment, OmadeusEnvironment
   },
   dev: {
     label: "Dev",
-    casUrl: "https://dev1-cas.rouztech.com",
-    maestroUrl: "https://dev1-maestro.rouztech.com",
+    casUrl: "https://dev-cas.rouztech.com",
+    maestroUrl: "https://dev-maestro.rouztech.com",
   },
   milestone: {
     label: "Milestone",

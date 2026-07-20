@@ -46,8 +46,8 @@ describe("resolveOmadeusAccount", () => {
     expect(account.password).toBe("secret");
     expect(account.organizationId).toBe(123);
     expect(account.environment).toBe("dev");
-    expect(account.casUrl).toBe("https://dev1-cas.rouztech.com");
-    expect(account.maestroUrl).toBe("https://dev1-maestro.rouztech.com");
+    expect(account.casUrl).toBe("https://dev-cas.rouztech.com");
+    expect(account.maestroUrl).toBe("https://dev-maestro.rouztech.com");
   });
 
   it("prefers config credentials over env credentials", () => {

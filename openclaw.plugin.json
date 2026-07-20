@@ -18,6 +18,7 @@
         "type": "string",
         "enum": ["production", "staging", "dev", "milestone"]
       },
+      "openClawReferenceId": { "type": "number" },
       "inbound": {
         "type": "object",
         "additionalProperties": false,
@@ -110,6 +111,7 @@
             "type": "string",
             "enum": ["production", "staging", "dev", "milestone"]
           },
+          "openClawReferenceId": { "type": "number" },
           "inbound": {
             "type": "object",
             "additionalProperties": false,
@@ -204,6 +206,10 @@
         },
         "sessionTokenEnvironment": {
           "label": "Session token environment",
+          "advanced": true
+        },
+        "openClawReferenceId": {
+          "label": "OpenClaw member reference ID",
           "advanced": true
         },
         "inbound": {

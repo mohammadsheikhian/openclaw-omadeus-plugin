@@ -71,6 +71,8 @@ function senderAllowed(
  *
  * When the counterparty can't be resolved (membership lookup failed) we fall back to the
  * sender check so a transient API failure doesn't silently drop every DM.
+ *
+ * TEMPORARILY UNUSED: the direct branch now admits only the OpenClaw room.
  */
 function directAllowed(params: {
   allowed: number[] | undefined;
@@ -155,8 +157,11 @@ function mentionRequired(params: {
  * channels, entities, and self-DMs so they can reach their own OpenClaw even if
  * the stored allowlist predates them. In a **direct with a distinct counterparty**
  * the opposite holds: a self-authored message is the operator talking to that other
- * person and is dropped here. Self-authored *echoes* of OpenClaw's own replies are
- * filtered even earlier, at socket ingestion, by the {@link SentMessageTracker}.
+ * person and is dropped here.
+ *
+ * The operator's DM with the **OpenClaw member** is the exception to that rule — see the
+ * direct branch below. Self-authored *echoes* of OpenClaw's own replies are filtered even
+ * earlier, at socket ingestion, by the {@link SentMessageTracker}.
  */
 export function evaluateOmadeusInboundPolicy(params: {
   inbound: OmadeusInboundMessage;
@@ -177,38 +182,42 @@ export function evaluateOmadeusInboundPolicy(params: {
     if (!policy.direct.enabled) {
       return { allow: false, reason: "direct_disabled", details: { surface } };
     }
-    // A direct is a 1:1 with the counterparty. Because OpenClaw shares the operator's
-    // Omadeus account, a DM the operator types to that counterparty arrives with
-    // `fromReferenceId === self` — that is the operator talking TO the other person, not a
-    // request for OpenClaw, so it must never be answered. (A self-DM has no distinct
-    // counterparty; it is the operator messaging their own OpenClaw and still passes below.)
-    const hasDistinctCounterparty =
-      directCounterpartyReferenceId !== undefined &&
-      directCounterpartyReferenceId !== selfReferenceId;
-    if (inbound.fromReferenceId === selfReferenceId && hasDistinctCounterparty) {
+    const openClawReferenceId = omadeusCfg?.openClawReferenceId;
+
+    // OpenClaw's own replies are authored by the OpenClaw member (we post them with
+    // `asOpenclaw`), so answering them would talk to ourselves. Echoes are normally
+    // suppressed at socket ingestion by the SentMessageTracker; this is the structural
+    // backstop for when that misses (TTL expiry, gateway restart).
+    if (openClawReferenceId !== undefined && inbound.fromReferenceId === openClawReferenceId) {
       return {
         allow: false,
-        reason: "direct_self_authored",
-        details: {
-          fromReferenceId: inbound.fromReferenceId,
-          counterpartyReferenceId: directCounterpartyReferenceId,
-        },
+        reason: "direct_openclaw_authored",
+        details: { fromReferenceId: inbound.fromReferenceId },
       };
     }
-    if (
-      !directAllowed({
-        allowed: policy.direct.allowedSenderReferenceIds,
-        counterpartyReferenceId: directCounterpartyReferenceId,
-        fromReferenceId: inbound.fromReferenceId,
-        selfReferenceId,
-      })
-    ) {
+
+    // The operator's DM with the OpenClaw member IS their own OpenClaw room. OpenClaw is a
+    // distinct Omadeus user while the gateway authenticates as the operator, so the
+    // operator's messages to it arrive self-authored with OpenClaw as the counterparty.
+    const isOpenClawDirect =
+      openClawReferenceId !== undefined && directCounterpartyReferenceId === openClawReferenceId;
+
+    // TEMPORARY: the DM with the OpenClaw member is the ONLY room OpenClaw answers.
+    // Every other direct is dropped, including:
+    //  - 1:1s with other people (the operator talking to them, not to OpenClaw),
+    //  - the operator's self-DM (a notes-to-self room; `pickCounterparty` leaves it
+    //    unresolved, which previously fell through to the self-sender escape hatch),
+    //  - any direct whose counterparty could not be resolved.
+    // Note this collapses "self-DM" and "membership lookup failed" into one drop: if the
+    // directs API is failing, OpenClaw goes quiet rather than answering the wrong room.
+    if (!isOpenClawDirect) {
       return {
         allow: false,
-        reason: "direct_counterparty_not_allowed",
+        reason: "direct_not_openclaw_room",
         details: {
           fromReferenceId: inbound.fromReferenceId,
           counterpartyReferenceId: directCounterpartyReferenceId,
+          openClawReferenceId,
         },
       };
     }

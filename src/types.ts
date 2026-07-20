@@ -71,6 +71,15 @@ export type OmadeusChannelConfig = {
   sessionToken?: string;
   /** Environment the cached sessionToken was minted under (must match `environment`). */
   sessionTokenEnvironment?: OmadeusEnvironment;
+  /**
+   * Reference ID of the OpenClaw Omadeus member, resolved during setup.
+   *
+   * OpenClaw is a distinct Omadeus user, but the gateway authenticates as the operator
+   * and posts as OpenClaw via `asOpenclaw`. The two identities are therefore only
+   * distinguishable by this id, which is what lets the inbound policy tell the operator's
+   * own OpenClaw DM apart from a DM with a real person.
+   */
+  openClawReferenceId?: number;
   /** Jaguar chat ingress allowlists and mention rules. */
   inbound?: OmadeusInboundPolicy;
 };

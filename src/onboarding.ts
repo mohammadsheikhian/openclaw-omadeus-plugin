@@ -132,6 +132,7 @@ async function promptOrganizationId(params: {
   return Number(String(raw).trim());
 }
 
+/** TEMPORARILY UNUSED: onboarding no longer prompts for channel selection. */
 async function promptChannelSelection(params: {
   prompter: WizardPrompter;
   maestroUrl: string;
@@ -245,6 +246,8 @@ async function promptCredentials(
 /**
  * Ask whether an @mention is required to trigger OpenClaw in a given surface
  * (channels or entity rooms). DMs never use this — you can't @mention in a DM.
+ *
+ * TEMPORARILY UNUSED: onboarding no longer prompts for inbound policy.
  */
 async function promptRequireMention(params: {
   prompter: WizardPrompter;
@@ -263,6 +266,7 @@ async function promptRequireMention(params: {
   return required ? "always" : "never";
 }
 
+/** TEMPORARILY UNUSED: onboarding no longer prompts for entity room types. */
 async function promptEntityKindSelection(params: {
   prompter: WizardPrompter;
   existingKinds?: OmadeusInboundEntityKind[];
@@ -396,88 +400,28 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
 
     await configureOpenClawBot({ maestroUrl, sessionToken });
 
-    const existingInbound = section.inbound;
-
     // The messaging allowlist is always the OpenClaw bot member. It is not
-    // user-selectable. The logged-in user can still reach their own instance —
-    // `senderAllowed` in the inbound policy always admits `selfReferenceId`.
-    const allowedUserReferenceIds = [openClawMember.referenceId, selfReferenceId];
+    // user-selectable. The logged-in user can still reach their own instance: their DM
+    // with the OpenClaw member is recognised by `openClawReferenceId` and always admitted.
+    //
+    // TEMPORARY: the logged-in user's own reference id (`selfReferenceId`) is
+    // deliberately left out of the allowlist — only DMs with the OpenClaw bot work.
+    const allowedUserReferenceIds = [openClawMember.referenceId];
     await prompter.note(
       `Messaging allowlist set to the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}).`,
       "Omadeus messaging allowlist",
     );
 
-    const selectedChannels = await promptChannelSelection({
-      prompter,
-      maestroUrl,
-      sessionToken,
-      memberReferenceId: selfReferenceId,
-      existingChannelViewIds: existingInbound?.channels?.allowedChannelViewIds,
-    });
-
-    // Channels reuse the same messaging allowlist as direct messages.
-    const channelSenderIds = selectedChannels.length > 0 ? allowedUserReferenceIds : undefined;
-    const channelRequireMention =
-      selectedChannels.length > 0
-        ? await promptRequireMention({
-            prompter,
-            surfaceLabel: "allowed channels",
-            existing: existingInbound?.channels?.requireMention,
-          })
-        : "never";
-
-    const entityKinds = await promptEntityKindSelection({
-      prompter,
-      existingKinds: existingInbound?.entities?.allowedKinds,
-    });
-
-    // Entity rooms reuse the same messaging allowlist as direct messages.
-    const entitySenderIds = entityKinds.length > 0 ? allowedUserReferenceIds : undefined;
-    const entityRequireMention =
-      entityKinds.length > 0
-        ? await promptRequireMention({
-            prompter,
-            surfaceLabel: "entity rooms",
-            existing: existingInbound?.entities?.requireMention,
-          })
-        : "never";
-
-    const channelRoomIds = selectedChannels
-      .flatMap((selectedChannel) => [
-        selectedChannel.publicRoomId,
-        selectedChannel.privateRoomId,
-      ])
-      .filter((id): id is number => typeof id === "number");
-    const channelViewIds = selectedChannels.map((selectedChannel) => selectedChannel.id);
-    const channelTitles = selectedChannels
-      .map((selectedChannel) => selectedChannel.title || `Channel ${selectedChannel.id}`)
-      .join(", ");
-
-    const senderSummary = (ids: number[] | undefined) =>
-      ids && ids.length > 0 ? ids.join(", ") : "all users";
-    const mentionSummary = (require: OmadeusInboundMentionPolicy) =>
-      require === "never"
-        ? "no @mention required"
-        : require === "outsideAllowlist"
-          ? "@mention required outside the allowlist"
-          : "@mention required";
-
-    const channelSummary =
-      selectedChannels.length > 0
-        ? `- Channels "${channelTitles}": rooms ${channelRoomIds.join(", ") || "(no room ids)"} from ${senderSummary(channelSenderIds)}; ${mentionSummary(channelRequireMention)}.`
-        : "- Channels: disabled (none selected).";
-
-    const entitySummary =
-      entityKinds.length > 0
-        ? `- Entity rooms (${entityKinds.join(", ")}): ${senderSummary(entitySenderIds)}; ${mentionSummary(entityRequireMention)}.`
-        : "- Entity rooms: disabled (no room types selected).";
-
+    // TEMPORARY: onboarding no longer prompts for channels, entity rooms, or
+    // mention policy. Direct messages with the OpenClaw member are the only
+    // inbound surface — channels and entity rooms are always written disabled,
+    // overwriting anything a previous setup run may have enabled.
     await prompter.note(
       [
         `Inbound policy (Jaguar chat):`,
-        `- Direct messages: enabled for ${senderSummary(allowedUserReferenceIds)}.`,
-        channelSummary,
-        entitySummary,
+        `- Direct messages: enabled for ${allowedUserReferenceIds.join(", ")}.`,
+        "- Channels: disabled.",
+        "- Entity rooms: disabled.",
       ].join("\n"),
       "Omadeus inbound policy",
     );
@@ -494,6 +438,7 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
           organizationId,
           sessionToken,
           sessionTokenEnvironment: environment,
+          openClawReferenceId: openClawMember.referenceId,
           inbound: {
             version: 1,
             direct: {
@@ -502,17 +447,15 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
               requireMention: "never",
             },
             channels: {
-              enabled: selectedChannels.length > 0,
-              allowedRoomIds: channelRoomIds,
-              allowedChannelViewIds: channelViewIds,
-              ...(channelSenderIds ? { allowedSenderReferenceIds: channelSenderIds } : {}),
-              requireMention: channelRequireMention,
+              enabled: false,
+              allowedRoomIds: [],
+              allowedChannelViewIds: [],
+              requireMention: "never",
             },
             entities: {
-              enabled: entityKinds.length > 0,
-              allowedKinds: entityKinds,
-              ...(entitySenderIds ? { allowedSenderReferenceIds: entitySenderIds } : {}),
-              requireMention: entityRequireMention,
+              enabled: false,
+              allowedKinds: [],
+              requireMention: "never",
             },
           },
         },
