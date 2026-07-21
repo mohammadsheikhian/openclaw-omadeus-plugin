@@ -88,6 +88,9 @@ async function persistSessionToken(
   lastPersistedToken = token;
 }
 
+/** Actions `handleAction` implements; anything else falls back to the shared SDK path. */
+const OMADEUS_MESSAGE_ACTIONS = new Set(["send", "edit", "delete", "react"]);
+
 function actionError(text: string, error = text) {
   return {
     isError: true as const,
@@ -252,6 +255,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         schema: null,
       };
     },
+    supportsAction: ({ action }) => OMADEUS_MESSAGE_ACTIONS.has(action),
     handleAction: async (ctx) => {
       const account = resolveOmadeusAccount({ cfg: ctx.cfg });
       const apiOpts = () => {
@@ -296,6 +300,57 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
             folderId,
           });
           return actionOk({ action: "create", kind, number: created["number"], id: created["id"], title });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return actionError(msg);
+        }
+      }
+
+      // Plain text send. Harnesses whose `sourceVisibleReplies` default is `message_tool`
+      // (Codex, for example) never auto-deliver the final text — they call the message tool
+      // instead, so this path is the only way their replies reach the room.
+      if (ctx.action === "send") {
+        if (!gatewayState.jaguar) {
+          return actionError("Omadeus: not connected. Is the gateway running with Omadeus enabled?");
+        }
+        const text = readStringParam(ctx.params, ["message", "text", "body"]);
+        if (!text) {
+          return actionError("Omadeus send requires `message`.", "Missing message.");
+        }
+
+        const rawTarget = readStringParam(ctx.params, ["to", "target", "chatId", "chat_id", "roomId"]);
+        if (!rawTarget) {
+          return actionError(
+            "Omadeus send requires a target: room:<roomId>, a numeric room id, or N<number>/T<number>.",
+            "Missing target.",
+          );
+        }
+
+        let roomId = normalizeOmadeusRoomId(rawTarget);
+        if (!roomId) {
+          const taskIntent = parseTaskChannelTargetIntent(rawTarget);
+          const resolved = taskIntent
+            ? await resolveTaskRoomIdByNumber(apiOpts(), { nuggetNumber: taskIntent.nuggetNumber })
+            : undefined;
+          if (!resolved) {
+            return actionError(
+              `Omadeus send could not resolve target \`${rawTarget}\`. Use room:<roomId> or a numeric room id.`,
+              "Unresolved target.",
+            );
+          }
+          roomId = String(resolved);
+        }
+
+        try {
+          const sent = await sendOmadeusMessage(
+            {
+              apiOpts: apiOpts(),
+              jaguarSocket: gatewayState.jaguar,
+              sentTracker: gatewayState.sentTracker ?? undefined,
+            },
+            { to: roomId, text },
+          );
+          return actionOk({ action: "send", messageId: sent.messageId, chatId: sent.chatId });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return actionError(msg);
