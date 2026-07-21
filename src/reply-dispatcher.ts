@@ -34,6 +34,14 @@ export function createOmadeusReplyDispatcher(params: CreateOmadeusReplyDispatche
   });
   const chunkMode = core.channel.text.resolveChunkMode(cfg, "omadeus");
 
+  // Some harnesses (Codex, notably) default direct chats to `message_tool` visible replies, so
+  // final assistant text is dropped unless the model calls `message(action=send)`. Weaker models
+  // often answer without that call, which silently loses the reply. Omadeus rooms are always a
+  // conversation with a human, so default to automatic delivery — but never override an operator
+  // who set `messages.visibleReplies` explicitly.
+  const sourceReplyDeliveryMode =
+    cfg.messages?.visibleReplies === undefined ? ("automatic" as const) : undefined;
+
   const { dispatcher, replyOptions, markDispatchIdle } =
     core.channel.reply.createReplyDispatcherWithTyping({
       responsePrefix: prefixContext.responsePrefix,
@@ -57,7 +65,11 @@ export function createOmadeusReplyDispatcher(params: CreateOmadeusReplyDispatche
 
   return {
     dispatcher,
-    replyOptions: { ...replyOptions, onModelSelected: prefixContext.onModelSelected },
+    replyOptions: {
+      ...replyOptions,
+      onModelSelected: prefixContext.onModelSelected,
+      ...(sourceReplyDeliveryMode ? { sourceReplyDeliveryMode } : {}),
+    },
     markDispatchIdle,
   };
 }

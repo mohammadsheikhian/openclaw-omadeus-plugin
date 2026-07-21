@@ -256,6 +256,18 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       };
     },
     supportsAction: ({ action }) => OMADEUS_MESSAGE_ACTIONS.has(action),
+    /**
+     * Routes plain `message(action=send)` onto core's durable send path (persist, retry,
+     * recover, ack) via the outbound adapter. Returning null keeps an action on the legacy
+     * plugin-owned `handleAction` path, which is what create_task/create_nugget still needs
+     * since it is not a message delivery at all.
+     */
+    prepareSendPayload: ({ ctx, payload }) => {
+      if (ctx.action !== "send" || isCreateNuggetRequest(ctx.params)) {
+        return null;
+      }
+      return payload;
+    },
     handleAction: async (ctx) => {
       const account = resolveOmadeusAccount({ cfg: ctx.cfg });
       const apiOpts = () => {
