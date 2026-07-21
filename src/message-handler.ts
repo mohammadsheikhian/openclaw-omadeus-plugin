@@ -23,7 +23,7 @@ import {
   parseRecurringScheduleIntent,
 } from "./nugget-lookup.js";
 import type { OutboundDeps } from "./outbound.js";
-import { createOmadeusReplyDispatcher } from "./reply-dispatcher.js";
+import { createOmadeusTurnDelivery } from "./reply-dispatcher.js";
 import { getOmadeusChannelConfig } from "./config.js";
 import { evaluateOmadeusInboundPolicy } from "./inbound-policy.js";
 import { getOmadeusRuntime } from "./runtime.js";
@@ -325,58 +325,8 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       (cfg.session as Record<string, unknown> | undefined)?.store as string | undefined,
       { agentId: route.agentId },
     );
-    const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-    const timestamp = inbound.timestamp ? new Date(inbound.timestamp) : undefined;
-    const previousTimestamp = core.channel.session.readSessionUpdatedAt({
-      storePath,
-      sessionKey: route.sessionKey,
-    });
 
-    const body = core.channel.reply.formatAgentEnvelope({
-      channel: "Omadeus",
-      from: envelopeFrom,
-      timestamp,
-      previousTimestamp,
-      envelope: envelopeOptions,
-      body: rawBody,
-    });
-
-    const ctxPayload = core.channel.reply.finalizeInboundContext({
-      Body: body,
-      BodyForAgent: bodyForAgent,
-      RawBody: rawBody,
-      CommandBody: rawBody.trim(),
-      BodyForCommands: rawBody.trim(),
-      /** Lets the message tool default `react` / `edit` to this Jaguar message id. */
-      MessageSid: String(inbound.messageId),
-      From: omadeusFrom,
-      To: omadeusTo,
-      SessionKey: route.sessionKey,
-      AccountId: route.accountId,
-      ChatType: isDirectMessage ? "direct" : "group",
-      ConversationLabel: envelopeFrom,
-      GroupSubject: !isDirectMessage ? (inbound.roomName ?? inbound.subscribableKind) : undefined,
-      SenderName: senderName,
-      SenderId: senderId,
-      Provider: "omadeus" as const,
-      Surface: "omadeus" as const,
-      Timestamp: inbound.timestamp ?? Date.now(),
-      WasMentioned: isDirectMessage || isEntityRoom || inbound.isMention,
-      CommandAuthorized: commandGate.commandAuthorized,
-      OriginatingChannel: "omadeus" as const,
-      OriginatingTo: omadeusTo,
-    });
-
-    await core.channel.session.recordInboundSession({
-      storePath,
-      sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
-      ctx: ctxPayload,
-      onRecordError: (err) => {
-        log.debug?.(`omadeus: failed updating session meta: ${String(err)}`);
-      },
-    });
-
-    const { dispatcher, replyOptions, markDispatchIdle } = createOmadeusReplyDispatcher({
+    const { delivery, dispatcherOptions, replyOptions } = createOmadeusTurnDelivery({
       cfg,
       agentId: route.agentId,
       accountId: route.accountId,
@@ -388,27 +338,93 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
 
     log.info("dispatching to agent", { sessionKey: route.sessionKey });
     try {
-      const { queuedFinal, counts } = await core.channel.reply.withReplyDispatcher({
-        dispatcher,
-        onSettled: () => {
-          markDispatchIdle();
-        },
-        run: () =>
-          core.channel.reply.dispatchReplyFromConfig({
-            ctx: ctxPayload,
-            cfg,
-            dispatcher,
-            replyOptions,
+      await core.channel.inbound.run({
+        channel: "omadeus",
+        accountId: route.accountId,
+        raw: inbound,
+        adapter: {
+          ingest: (msg) => ({
+            id: String(msg.messageId),
+            timestamp: msg.timestamp ?? Date.now(),
+            rawText: rawBody,
+            textForAgent: bodyForAgent,
+            textForCommands: rawBody.trim(),
+            raw: msg,
           }),
-      });
+          resolveTurn: (input) => {
+            const ctxPayload = core.channel.inbound.buildContext({
+              channel: "omadeus",
+              accountId: route.accountId,
+              provider: "omadeus",
+              surface: "omadeus",
+              /** Lets the message tool default `react` / `edit` to this Jaguar message id. */
+              messageId: String(inbound.messageId),
+              timestamp: input.timestamp,
+              from: omadeusFrom,
+              sender: { id: senderId, name: senderName },
+              conversation: {
+                kind: isDirectMessage ? "direct" : "group",
+                id: isDirectMessage ? senderId : roomId,
+                label: envelopeFrom,
+              },
+              route: {
+                agentId: route.agentId,
+                accountId: route.accountId,
+                routeSessionKey: route.sessionKey,
+                dispatchSessionKey: route.sessionKey,
+              },
+              reply: { to: omadeusTo, originatingTo: omadeusTo },
+              message: {
+                rawBody,
+                bodyForAgent,
+                commandBody: rawBody.trim(),
+                envelopeFrom,
+                preview,
+              },
+              access: { commands: { authorized: commandGate.commandAuthorized } },
+              extra: {
+                GroupSubject: !isDirectMessage
+                  ? (inbound.roomName ?? inbound.subscribableKind)
+                  : undefined,
+                // Entity rooms are 1:1-style threads with the bot, so anything that reaches
+                // dispatch is addressed to it — see the isEntityRoom note above.
+                WasMentioned: isDirectMessage || isEntityRoom || inbound.isMention,
+                OriginatingChannel: "omadeus" as const,
+              },
+            });
 
-      log.info("dispatch complete", { queuedFinal, counts });
-      const finalCount = counts.final;
-      if (queuedFinal) {
-        log.debug?.(
-          `omadeus: delivered ${finalCount} repl${finalCount === 1 ? "y" : "ies"} to room ${roomId}`,
-        );
-      }
+            return {
+              cfg,
+              channel: "omadeus",
+              accountId: route.accountId,
+              agentId: route.agentId,
+              routeSessionKey: route.sessionKey,
+              storePath,
+              ctxPayload,
+              recordInboundSession: core.channel.session.recordInboundSession,
+              dispatchReplyWithBufferedBlockDispatcher:
+                core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+              delivery,
+              dispatcherOptions,
+              replyOptions,
+              record: {
+                onRecordError: (err: unknown) => {
+                  log.debug?.(`omadeus: failed updating session meta: ${String(err)}`);
+                },
+              },
+            };
+          },
+        },
+        log: (event) => {
+          if (event.event === "error") {
+            log.error("turn error", { stage: event.stage, error: String(event.error) });
+            return;
+          }
+          log.debug?.(`omadeus turn ${event.stage}:${event.event}`, {
+            ...(event.reason ? { reason: event.reason } : {}),
+          });
+        },
+      });
     } catch (err) {
       log.error("dispatch failed", { error: String(err) });
       runtime.error?.(`omadeus dispatch failed: ${String(err)}`);
