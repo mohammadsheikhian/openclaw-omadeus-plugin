@@ -62,3 +62,45 @@ describe("createDirectCounterpartyResolver", () => {
     expect(await resolver.resolve(5)).toBeUndefined();
   });
 });
+
+describe("transient failure handling", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    log.warn.mockClear();
+  });
+
+  // A dropped lookup drops the user's message, so a momentary blip must not be fatal.
+  it("retries a failing lookup and succeeds on a later attempt", async () => {
+    const spy = vi
+      .spyOn(directApi, "listDirects")
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce([
+        { id: 5, members: [{ referenceId: selfRef }, { referenceId: 900 }] },
+      ] as never);
+
+    const resolver = createDirectCounterpartyResolver({
+      apiOpts,
+      selfReferenceId: selfRef,
+      log,
+      sleep: async () => {},
+    });
+
+    await expect(resolver.resolve(5)).resolves.toBe(900);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("gives up and fails closed once retries are exhausted", async () => {
+    vi.spyOn(directApi, "listDirects").mockRejectedValue(new Error("down"));
+
+    const resolver = createDirectCounterpartyResolver({
+      apiOpts,
+      selfReferenceId: selfRef,
+      log,
+      sleep: async () => {},
+    });
+
+    await expect(resolver.resolve(5)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+});

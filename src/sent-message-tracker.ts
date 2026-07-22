@@ -3,21 +3,23 @@
  * suppressed, instead of dropping every message authored by the logged-in
  * account.
  *
- * OpenClaw sends as the same Omadeus account it listens on, so each outbound
- * message is broadcast back to us over the socket. We register up to three keys
- * per send:
+ * OpenClaw sends over the same Jaguar socket it listens on, so each outbound
+ * message is broadcast back to us. We register two keys per send:
  *
  * - the client-generated `temporaryId` — known *before* the HTTP round-trip, so
  *   it matches even when the socket echo beats the send response (the common
  *   race);
- * - the backend message `id` — known once the send response returns;
- * - a normalized copy of the body scoped to its room — a last-resort fallback
- *   used only for self-authored echoes that somehow arrive without a
- *   recognizable id. Scoping by room prevents the same text sent in one chat
- *   from suppressing an identical message in a different chat.
+ * - the backend message `id` — known once the send response returns.
  *
- * `id` and `temporaryId` are kept in separate maps. Entries expire after a
- * short TTL and each map is size-capped, so the tracker cannot grow unbounded.
+ * Both are authoritative. There is deliberately **no body-matching fallback**:
+ * replies are posted with `asOpenclaw`, so they echo back authored by the
+ * OpenClaw bot, never by the operator. A body match could therefore only ever
+ * fire on the operator's *own* genuine message — silently swallowing it
+ * whenever they happened to repeat something OpenClaw had just said ("1",
+ * "ok", "yes") within the TTL.
+ *
+ * Entries expire after a short TTL and each map is size-capped, so the tracker
+ * cannot grow unbounded.
  */
 
 const DEFAULT_TTL_MS = 2 * 60 * 1000; // 2 minutes — comfortably covers echo latency.
@@ -29,30 +31,12 @@ export type SentMessageTrackerOptions = {
   now?: () => number;
 };
 
-function normalizeContent(body: string): string {
-  return body.trim();
-}
-
-/** Normalize a room identity so outbound (`"room:123"`/`"123"`) and the socket
- * echo (numeric `123`) map to the same key. */
-function roomKey(roomId: string | number): string {
-  return String(roomId).replace(/^room:/, "").trim();
-}
-
-/** Build the room-scoped content key, or undefined when the body is empty. */
-function contentKey(roomId: string | number, body: string): string | undefined {
-  const normalized = normalizeContent(body);
-  if (!normalized) return undefined;
-  return `${roomKey(roomId)}\n${normalized}`;
-}
-
 export class SentMessageTracker {
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
   private readonly ids = new Map<number, number>();
   private readonly temporaryIds = new Map<string, number>();
-  private readonly contents = new Map<string, number>();
 
   constructor(options: SentMessageTrackerOptions = {}) {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
@@ -72,48 +56,16 @@ export class SentMessageTracker {
     this.remember(this.ids, id);
   }
 
-  /** Register a message body, scoped to its room, as a fallback match key. */
-  trackContent(roomId: string | number, body: string): void {
-    const key = contentKey(roomId, body);
-    if (!key) return;
-    this.remember(this.contents, key);
-  }
-
   /** Convenience: register whichever keys are available for one outbound message. */
-  trackOutbound(params: {
-    temporaryId?: string;
-    id?: number;
-    body?: string;
-    roomId?: string | number;
-  }): void {
+  trackOutbound(params: { temporaryId?: string; id?: number }): void {
     if (params.temporaryId) this.trackTemporaryId(params.temporaryId);
     if (typeof params.id === "number") this.trackId(params.id);
-    if (typeof params.body === "string" && params.roomId !== undefined) {
-      this.trackContent(params.roomId, params.body);
-    }
   }
 
-  /**
-   * Returns true when an inbound socket message is an echo of something we sent.
-   *
-   * `id`/`temporaryId` matches are authoritative. The content fallback only
-   * applies to self-authored messages — the only ones that can form a reply
-   * loop — and is scoped to the message's room, so a different user repeating
-   * our text (or the same text in another room) is never suppressed.
-   */
-  isEcho(msg: {
-    id?: number;
-    temporaryId?: string;
-    body?: string;
-    roomId?: string | number;
-    fromSelf: boolean;
-  }): boolean {
+  /** Returns true when an inbound socket message is an echo of something we sent. */
+  isEcho(msg: { id?: number; temporaryId?: string }): boolean {
     if (typeof msg.id === "number" && this.has(this.ids, msg.id)) return true;
     if (msg.temporaryId && this.has(this.temporaryIds, msg.temporaryId)) return true;
-    if (msg.fromSelf && typeof msg.body === "string" && msg.roomId !== undefined) {
-      const key = contentKey(msg.roomId, msg.body);
-      if (key && this.has(this.contents, key)) return true;
-    }
     return false;
   }
 

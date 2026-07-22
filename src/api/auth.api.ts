@@ -57,28 +57,6 @@ export async function createCasToken(params: {
   return { token: body.token, refreshCookie };
 }
 
-export async function getMe(params: {
-  casUrl: string;
-  casToken: string;
-  refreshCookie?: string;
-}): Promise<{ email: string }> {
-  const { casUrl, casToken, refreshCookie } = params;
-  const url = `${casUrl}/apiv1/members/me`;
-  const res = await omadeusFetch("CAS get member", url, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${casToken}`,
-      "Content-Type": "application/json;charset=UTF-8",
-      ...(refreshCookie ? { Cookie: refreshCookie } : {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`CAS get member failed (${res.status}): ${text}`);
-  }
-  return (await res.json()) as { email: string };
-}
-
 export async function createAuthorizationCode(params: {
   casUrl: string;
   token: string;

@@ -1,12 +1,14 @@
 import { sendRoomMessage } from "./api/message.api.js";
 import type { SentMessageTracker } from "./sent-message-tracker.js";
-import type { JaguarSocketClient } from "./socket/jaguar.socket.js";
 import { generateTemporaryId, type OmadeusApiOptions } from "./utils/http.util.js";
 
+/**
+ * Sends go over REST, not the Jaguar socket. The socket still matters here indirectly:
+ * because the gateway authenticates as the operator, everything it sends echoes back over
+ * the socket as inbound, which is what `sentTracker` suppresses.
+ */
 export type OutboundDeps = {
   apiOpts: OmadeusApiOptions;
-  jaguarSocket: JaguarSocketClient;
-  /** Records messages we send so their socket echoes can be suppressed. */
   sentTracker?: SentMessageTracker;
 };
 
@@ -19,7 +21,7 @@ export async function sendOmadeusMessage(
   const temporaryId = generateTemporaryId();
   // Register before sending: the socket echo can arrive before this HTTP call
   // returns, so the temporaryId (and body fallback) must already be tracked.
-  deps.sentTracker?.trackOutbound({ temporaryId, body: text, roomId: to });
+  deps.sentTracker?.trackOutbound({ temporaryId });
 
   const result = await sendRoomMessage(deps.apiOpts, { roomId: to, body: text, temporaryId });
   if (!result.ok) {

@@ -5,32 +5,15 @@ import {
   type OpenClawConfig,
   type RuntimeEnv,
 } from "../runtime-api.js";
-import {
-  createNugget,
-  findNuggetByTaskChannelRoom,
-  readNuggetNumber,
-  resolveTaskChannelRoomId,
-  searchNuggetByNumber,
-} from "./api/nugget.api.js";
 import { seeMessage } from "./api/message.api.js";
 import { createDirectCounterpartyResolver } from "./direct-resolver.js";
-import {
-  appendNuggetContextForTaskOrNuggetRoom,
-  appendNuggetLookupContextForAgent,
-  messageNeedsTaskRoomNuggetContext,
-  parseChannelTaskCreateIntent,
-  parseNuggetLookupIntent,
-  parseRecurringScheduleIntent,
-} from "./nugget-lookup.js";
+import { sendOmadeusMessage } from "./outbound.js";
 import type { OutboundDeps } from "./outbound.js";
-import { createOmadeusReplyDispatcher } from "./reply-dispatcher.js";
+import { createOmadeusTurnDelivery } from "./reply-dispatcher.js";
 import { getOmadeusChannelConfig } from "./config.js";
 import { evaluateOmadeusInboundPolicy } from "./inbound-policy.js";
 import { getOmadeusRuntime } from "./runtime.js";
-import {
-  type OmadeusInboundMessage,
-  OMADEUS_INBOUND_ENTITY_KIND_SET,
-} from "./types.js";
+import type { OmadeusInboundMessage } from "./types.js";
 
 type Log = {
   info: (msg: string, extra?: Record<string, unknown>) => void;
@@ -38,28 +21,6 @@ type Log = {
   error: (msg: string, extra?: Record<string, unknown>) => void;
   debug?: (msg: string, extra?: Record<string, unknown>) => void;
 };
-
-const SK = "`subscribableKind`";
-
-/** Injected into BodyForAgent so the model uses Jaguar room kind, not invented OpenClaw `task/...` keys. */
-function buildOmadeusEntityRoomContextLine(kind: string): string {
-  if (kind === "task") {
-    return `This chat is an **Omadeus Task** room (${SK} \`task\`). If the user asks about the Task, its status, or says \"the task\", they mean **this** Omadeus Task / this thread — not an OpenClaw \"task\" or a \"session id\" for it.`;
-  }
-  if (kind === "nugget") {
-    return `This chat is an **Omadeus Nugget** room (${SK} \`nugget\`). If the user asks about the Nugget, its status, or colloquially says \"the task\", they mean **this** Omadeus Nugget / this thread — not an OpenClaw \"task\" or a \"session id\" for it. (Task and Nugget are different; infer from this room's ${SK}.)`;
-  }
-  const other: Record<string, string> = {
-    project: "Project",
-    release: "Release",
-    sprint: "Sprint",
-    summary: "Summary",
-    client: "Client",
-    folder: "Folder",
-  };
-  const label = other[kind] ?? kind;
-  return `This chat is an **Omadeus ${label}** room (${SK} \`${kind}\`). User questions refer to that Omadeus ${label} in this thread — not an OpenClaw \"session id\" for it.`;
-}
 
 export type OmadeusMessageHandlerDeps = {
   cfg: OpenClawConfig;
@@ -107,25 +68,12 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     inbound: OmadeusInboundMessage,
     ackMessageIds: number[] = [inbound.messageId],
   ) => {
-    const isDirectMessage = inbound.subscribableKind === "direct";
-    // Task/Nugget/Project/… Jaguar rooms are 1:1-style threads with the bot. A message only
-    // reaches dispatch here after the inbound policy has already enforced any mention requirement,
-    // so anything that arrives is addressed to the bot and must get a reply — treat it like a DM.
-    const isEntityRoom =
-      !isDirectMessage && OMADEUS_INBOUND_ENTITY_KIND_SET.has(String(inbound.subscribableKind));
     const senderId = String(inbound.fromReferenceId);
     const senderName = inbound.from;
     const roomId = String(inbound.roomId);
     const rawBody = inbound.content;
 
-    if (!rawBody.trim()) {
-      log.debug?.("skipping empty message");
-      return;
-    }
-
-    const directCounterpartyReferenceId = isDirectMessage
-      ? await directResolver.resolve(inbound.roomId)
-      : undefined;
+    const directCounterpartyReferenceId = await directResolver.resolve(inbound.roomId);
 
     const policyDecision = evaluateOmadeusInboundPolicy({
       inbound,
@@ -148,17 +96,21 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     const useAccessGroups =
       (cfg.commands as Record<string, unknown> | undefined)?.useAccessGroups !== false;
 
+    // The only room this channel serves is the operator's own DM with the OpenClaw bot, so
+    // the sender is by construction the account owner. Without an authorizer the shared gate
+    // can never authorize (`[].some(...)` is false), which silently swallowed every
+    // `/command` instead of running it.
     const hasControlCommand = core.channel.text.hasControlCommand(rawBody, cfg);
     const commandGate = resolveControlCommandGate({
       useAccessGroups,
-      authorizers: [],
+      authorizers: [{ configured: true, allowed: true }],
       allowTextCommands: true,
       hasControlCommand,
     });
 
     if (commandGate.shouldBlock) {
       logInboundDrop({
-        log: (msg) => log.debug?.(msg),
+        log: (msg) => log.info(msg),
         channel: "omadeus",
         reason: "control command (unauthorized)",
         target: senderId,
@@ -166,217 +118,52 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       return;
     }
 
-    // Committed to dispatching to the agent — mark the source message(s) seen.
-    // Never mark our own messages seen (the user can DM their own instance).
-    if (inbound.fromReferenceId !== selfReferenceId) {
+    // Admitted but unusable (attachment-only, or a bare @mention). Answer rather than going
+    // silent — but only here, after the policy has confirmed this is the OpenClaw DM.
+    if (!rawBody.trim()) {
+      log.info("omadeus: message has no usable text", { roomId: inbound.roomId });
       markMessagesSeen(ackMessageIds);
-    }
-
-    let bodyForAgent = rawBody;
-    const createIntent = parseChannelTaskCreateIntent(rawBody);
-    if (createIntent) {
       try {
-        const memberReferenceId = inbound.fromReferenceId;
-        const created = await createNugget(outboundDeps.apiOpts, {
-          title: createIntent.title,
-          description: createIntent.description,
-          kind: createIntent.kind,
-          priority: createIntent.priority,
-          stage: "Triage",
-          memberReferenceId,
-          clientId: 1,
-          folderId: 1,
+        await sendOmadeusMessage(outboundDeps, {
+          to: roomId,
+          text: "I can only read text messages — attachments and media aren't supported yet.",
         });
-        const createdLabel =
-          typeof created["number"] === "number"
-            ? `N${created["number"]}`
-            : String(created["id"] ?? "created");
-        const recurring = parseRecurringScheduleIntent(rawBody);
-        if (recurring && typeof created["number"] === "number") {
-          const cronExpr = recurring.everyMinutes === 60 ? "0 * * * *" : `*/${recurring.everyMinutes} * * * *`;
-          const taskRoomId = resolveTaskChannelRoomId(created);
-          const taskTarget = taskRoomId ? `room:${taskRoomId}` : `N${created["number"]}`;
-          bodyForAgent =
-            `${rawBody}\n\n` +
-            `[Omadeus create] Created ${createIntent.kind} ${createdLabel}.\n` +
-            `[Scheduling required] The user asked for recurring execution.\n` +
-            `You MUST use the cron tool now (no simulation) to add a job with:\n` +
-            `- schedule.kind: "cron"\n` +
-            `- schedule.expr: "${cronExpr}"\n` +
-            `- payload.kind: "agentTurn"\n` +
-            `- payload.message: "${createIntent.description}"\n` +
-            `- payload.deliver: true\n` +
-            `- payload.channel: "omadeus"\n` +
-            `- payload.to: "${taskTarget}"\n` +
-            `- sessionTarget: "isolated"\n` +
-            `- delivery.mode: "announce"\n` +
-            `- delivery.channel: "omadeus"\n` +
-            `- delivery.to: "${taskTarget}"\n` +
-            `Do NOT deliver to the current selected channel; delivery must go only to the created task private channel target above.\n` +
-            `Then confirm cron job creation to the user.`;
-        } else {
-          bodyForAgent = `${rawBody}\n\n[Omadeus create] Created ${createIntent.kind} ${createdLabel}.`;
-        }
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        runtime.error?.(`omadeus channel-triggered task create failed: ${errorMessage}`);
+        log.warn(`omadeus: failed to answer a text-less message: ${String(err)}`);
       }
+      return;
     }
 
-    const nuggetIntent = parseNuggetLookupIntent(rawBody);
-    if (nuggetIntent) {
-      try {
-        const nugget = await searchNuggetByNumber(outboundDeps.apiOpts, {
-          nuggetNumber: nuggetIntent.nuggetNumber,
-        });
-        bodyForAgent = await appendNuggetLookupContextForAgent(
-          rawBody,
-          nuggetIntent.nuggetNumber,
-          nugget,
-          outboundDeps.apiOpts,
-        );
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        runtime.error?.(`omadeus nugget lookup failed: ${errorMessage}`);
-        bodyForAgent = await appendNuggetLookupContextForAgent(
-          rawBody,
-          nuggetIntent.nuggetNumber,
-          null,
-          outboundDeps.apiOpts,
-          errorMessage,
-        );
-      }
-    }
+    // Committed to dispatching to the agent — mark the source message(s) seen.
+    // These are always authored by the operator (the gateway shares their account), so the
+    // receipt is recorded as the OpenClaw bot via `asOpenclaw`; see seeMessage.
+    markMessagesSeen(ackMessageIds);
 
-    // Only enrich with (or reference) this room's live entity when the message actually asks about
-    // the work item. Plain chatter ("Hello?", "thanks") must reach the model clean, so it reliably
-    // just replies instead of being derailed by imperative data / session-key framing.
-    const needsEntityContext = messageNeedsTaskRoomNuggetContext(rawBody);
-
-    const isTaskOrNuggetRoom =
-      !isDirectMessage && (inbound.subscribableKind === "task" || inbound.subscribableKind === "nugget");
-    if (isTaskOrNuggetRoom && !nuggetIntent && !createIntent && needsEntityContext) {
-      try {
-        const nugget = await findNuggetByTaskChannelRoom(outboundDeps.apiOpts, {
-          roomId: inbound.roomId,
-          roomName: inbound.roomName,
-          log: (msg, extra) => log.info(msg, extra),
-        });
-        log.info("omadeus: task-room nugget resolved", {
-          roomId: inbound.roomId,
-          roomName: inbound.roomName,
-          matched: !!nugget,
-          nuggetNumber: nugget ? (readNuggetNumber(nugget) ?? null) : null,
-        });
-        bodyForAgent = await appendNuggetContextForTaskOrNuggetRoom(
-          bodyForAgent,
-          inbound.roomId,
-          inbound.roomName,
-          nugget,
-          outboundDeps.apiOpts,
-        );
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        runtime.error?.(`omadeus task room nugget lookup failed: ${errorMessage}`);
-        bodyForAgent = await appendNuggetContextForTaskOrNuggetRoom(
-          bodyForAgent,
-          inbound.roomId,
-          inbound.roomName,
-          null,
-          outboundDeps.apiOpts,
-          errorMessage,
-        );
-      }
-    }
-
-    const omadeusFrom = isDirectMessage ? `omadeus:${senderId}` : `omadeus:group:${roomId}`;
-    const omadeusTo = isDirectMessage ? `room:${roomId}` : `room:${roomId}`;
+    const bodyForAgent = rawBody;
+    const omadeusFrom = `omadeus:${senderId}`;
+    const omadeusTo = `room:${roomId}`;
 
     const route = core.channel.routing.resolveAgentRoute({
       cfg,
       channel: "omadeus",
-      peer: {
-        kind: isDirectMessage ? "direct" : "group",
-        id: isDirectMessage ? senderId : roomId,
-      },
+      peer: { kind: "direct", id: senderId },
     });
 
-    // Omadeus entity rooms (Jaguar subscribableKind): see OmadeusInboundEntityKind,
-    // OMADEUS_INBOUND_ENTITY_KINDS. Models conflate "task" with OpenClaw and invent `task/<title>` keys.
-    // Only append this disambiguation when the message is actually about the entity/its status/session;
-    // for a bare greeting it is noise that pushes the model toward internal-session behavior instead of a reply.
-    if (isEntityRoom && needsEntityContext) {
-      const entityLine = buildOmadeusEntityRoomContextLine(String(inbound.subscribableKind));
-      bodyForAgent = `${bodyForAgent}\n\n[OpenClaw] ${entityLine} \`session_status\` is only for **OpenClaw** gateway session state (model/usage, etc.); for that, use this key or \`current\`: ${route.sessionKey} — never \`task/\` + a title as a session key.`;
-    }
-
     const preview = rawBody.replace(/\s+/g, " ").slice(0, 160);
-    const inboundLabel = isDirectMessage
-      ? `Omadeus DM from ${senderName}`
-      : `Omadeus message in ${inbound.subscribableKind}/${inbound.roomName ?? roomId} from ${senderName}`;
+    const inboundLabel = `Omadeus DM from ${senderName}`;
 
     core.system.enqueueSystemEvent(`${inboundLabel}: ${preview}`, {
       sessionKey: route.sessionKey,
       contextKey: `omadeus:message:${roomId}:${inbound.timestamp}`,
     });
 
-    const envelopeFrom = isDirectMessage ? senderName : (inbound.roomName ?? roomId);
+    const envelopeFrom = senderName;
     const storePath = core.channel.session.resolveStorePath(
       (cfg.session as Record<string, unknown> | undefined)?.store as string | undefined,
       { agentId: route.agentId },
     );
-    const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-    const timestamp = inbound.timestamp ? new Date(inbound.timestamp) : undefined;
-    const previousTimestamp = core.channel.session.readSessionUpdatedAt({
-      storePath,
-      sessionKey: route.sessionKey,
-    });
 
-    const body = core.channel.reply.formatAgentEnvelope({
-      channel: "Omadeus",
-      from: envelopeFrom,
-      timestamp,
-      previousTimestamp,
-      envelope: envelopeOptions,
-      body: rawBody,
-    });
-
-    const ctxPayload = core.channel.reply.finalizeInboundContext({
-      Body: body,
-      BodyForAgent: bodyForAgent,
-      RawBody: rawBody,
-      CommandBody: rawBody.trim(),
-      BodyForCommands: rawBody.trim(),
-      /** Lets the message tool default `react` / `edit` to this Jaguar message id. */
-      MessageSid: String(inbound.messageId),
-      From: omadeusFrom,
-      To: omadeusTo,
-      SessionKey: route.sessionKey,
-      AccountId: route.accountId,
-      ChatType: isDirectMessage ? "direct" : "group",
-      ConversationLabel: envelopeFrom,
-      GroupSubject: !isDirectMessage ? (inbound.roomName ?? inbound.subscribableKind) : undefined,
-      SenderName: senderName,
-      SenderId: senderId,
-      Provider: "omadeus" as const,
-      Surface: "omadeus" as const,
-      Timestamp: inbound.timestamp ?? Date.now(),
-      WasMentioned: isDirectMessage || isEntityRoom || inbound.isMention,
-      CommandAuthorized: commandGate.commandAuthorized,
-      OriginatingChannel: "omadeus" as const,
-      OriginatingTo: omadeusTo,
-    });
-
-    await core.channel.session.recordInboundSession({
-      storePath,
-      sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
-      ctx: ctxPayload,
-      onRecordError: (err) => {
-        log.debug?.(`omadeus: failed updating session meta: ${String(err)}`);
-      },
-    });
-
-    const { dispatcher, replyOptions, markDispatchIdle } = createOmadeusReplyDispatcher({
+    const { delivery, dispatcherOptions, replyOptions } = createOmadeusTurnDelivery({
       cfg,
       agentId: route.agentId,
       accountId: route.accountId,
@@ -388,27 +175,89 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
 
     log.info("dispatching to agent", { sessionKey: route.sessionKey });
     try {
-      const { queuedFinal, counts } = await core.channel.reply.withReplyDispatcher({
-        dispatcher,
-        onSettled: () => {
-          markDispatchIdle();
-        },
-        run: () =>
-          core.channel.reply.dispatchReplyFromConfig({
-            ctx: ctxPayload,
-            cfg,
-            dispatcher,
-            replyOptions,
+      await core.channel.inbound.run({
+        channel: "omadeus",
+        accountId: route.accountId,
+        raw: inbound,
+        adapter: {
+          ingest: (msg) => ({
+            id: String(msg.messageId),
+            timestamp: msg.timestamp ?? Date.now(),
+            rawText: rawBody,
+            textForAgent: bodyForAgent,
+            textForCommands: rawBody.trim(),
+            raw: msg,
           }),
-      });
+          resolveTurn: (input) => {
+            const ctxPayload = core.channel.inbound.buildContext({
+              channel: "omadeus",
+              accountId: route.accountId,
+              provider: "omadeus",
+              surface: "omadeus",
+              messageId: String(inbound.messageId),
+              timestamp: input.timestamp,
+              from: omadeusFrom,
+              sender: { id: senderId, name: senderName },
+              conversation: {
+                kind: "direct",
+                id: senderId,
+                label: envelopeFrom,
+              },
+              route: {
+                agentId: route.agentId,
+                accountId: route.accountId,
+                routeSessionKey: route.sessionKey,
+                dispatchSessionKey: route.sessionKey,
+              },
+              reply: { to: omadeusTo, originatingTo: omadeusTo },
+              message: {
+                rawBody,
+                bodyForAgent,
+                commandBody: rawBody.trim(),
+                envelopeFrom,
+                preview,
+              },
+              access: { commands: { authorized: commandGate.commandAuthorized } },
+              extra: {
+                // The channel only serves the OpenClaw DM, so every admitted message is
+                // addressed to the bot.
+                WasMentioned: true,
+                OriginatingChannel: "omadeus" as const,
+              },
+            });
 
-      log.info("dispatch complete", { queuedFinal, counts });
-      const finalCount = counts.final;
-      if (queuedFinal) {
-        log.debug?.(
-          `omadeus: delivered ${finalCount} repl${finalCount === 1 ? "y" : "ies"} to room ${roomId}`,
-        );
-      }
+            return {
+              cfg,
+              channel: "omadeus",
+              accountId: route.accountId,
+              agentId: route.agentId,
+              routeSessionKey: route.sessionKey,
+              storePath,
+              ctxPayload,
+              recordInboundSession: core.channel.session.recordInboundSession,
+              dispatchReplyWithBufferedBlockDispatcher:
+                core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+              delivery,
+              dispatcherOptions,
+              replyOptions,
+              record: {
+                onRecordError: (err: unknown) => {
+                  log.debug?.(`omadeus: failed updating session meta: ${String(err)}`);
+                },
+              },
+            };
+          },
+        },
+        log: (event) => {
+          if (event.event === "error") {
+            log.error("turn error", { stage: event.stage, error: String(event.error) });
+            return;
+          }
+          log.debug?.(`omadeus turn ${event.stage}:${event.event}`, {
+            ...(event.reason ? { reason: event.reason } : {}),
+          });
+        },
+      });
     } catch (err) {
       log.error("dispatch failed", { error: String(err) });
       runtime.error?.(`omadeus dispatch failed: ${String(err)}`);

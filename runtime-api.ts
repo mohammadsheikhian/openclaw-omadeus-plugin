@@ -9,6 +9,7 @@ export {
   createReplyPrefixContext,
 } from "openclaw/plugin-sdk/channel-runtime";
 export { logInboundDrop } from "openclaw/plugin-sdk/channel-inbound";
+export { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-outbound";
 export { resolveControlCommandGate } from "openclaw/plugin-sdk/command-auth";
 export { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
 export {
