@@ -41,46 +41,6 @@ describe("evaluateOmadeusInboundPolicy", () => {
     if (!d.allow) expect(d.reason).toBe("direct_not_openclaw_room");
   });
 
-  it("always allows the logged-in user in channels, even when not in the sender allowlist", () => {
-    const cfg: OmadeusChannelConfig = {
-      inbound: {
-        channels: {
-          enabled: true,
-          allowedRoomIds: [10],
-          // Sender allowlist deliberately excludes self.
-          allowedSenderReferenceIds: [201],
-          requireMention: "never",
-        },
-      },
-    };
-    const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "channel", roomId: 10, fromReferenceId: selfRef }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(d.allow).toBe(true);
-  });
-
-  it("always allows the logged-in user in entity rooms, even when not in the sender allowlist", () => {
-    const cfg: OmadeusChannelConfig = {
-      inbound: {
-        entities: {
-          enabled: true,
-          allowedKinds: ["task"],
-          // Sender allowlist deliberately excludes self.
-          allowedSenderReferenceIds: [201],
-          requireMention: "never",
-        },
-      },
-    };
-    const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "task", fromReferenceId: selfRef }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(d.allow).toBe(true);
-  });
-
   it("default config blocks direct messages (no OpenClaw member configured)", () => {
     // Without `openClawReferenceId` there is no room that can qualify, so every
     // direct is dropped rather than defaulting open.
@@ -91,26 +51,6 @@ describe("evaluateOmadeusInboundPolicy", () => {
     });
     expect(d.allow).toBe(false);
     if (!d.allow) expect(d.reason).toBe("direct_not_openclaw_room");
-  });
-
-  it("default config blocks channel messages", () => {
-    const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "channel" }),
-      omadeusCfg: {},
-      selfReferenceId: selfRef,
-    });
-    expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toBe("channels_disabled");
-  });
-
-  it("default config blocks entity messages", () => {
-    const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "task" }),
-      omadeusCfg: {},
-      selfReferenceId: selfRef,
-    });
-    expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toBe("entities_disabled");
   });
 
   it("ignores the direct sender allowlist outside the OpenClaw room", () => {
@@ -335,112 +275,37 @@ describe("evaluateOmadeusInboundPolicy", () => {
     }
   });
 
-  it("channel outsideAllowlist: no mention in allowlisted room", () => {
+
+  // The channel serves the OpenClaw DM only; every other Jaguar surface is refused here
+  // rather than relying on config to keep it disabled.
+  it("drops every non-direct room kind", () => {
+    const cfg: OmadeusChannelConfig = { openClawReferenceId: 900 };
+    for (const kind of ["channel", "task", "nugget", "project", "sprint", "release"] as const) {
+      const d = evaluateOmadeusInboundPolicy({
+        inbound: baseInbound({ subscribableKind: kind, fromReferenceId: 900 }),
+        omadeusCfg: cfg,
+        selfReferenceId: selfRef,
+      });
+      expect(d.allow).toBe(false);
+      if (!d.allow) expect(d.reason).toBe("not_direct_room");
+    }
+  });
+});
+
+describe("evaluateOmadeusInboundPolicy — mention handling", () => {
+  // There is no way to @mention inside a Jaguar direct, so honouring requireMention
+  // would drop every message and silently brick the channel.
+  it("admits an unmentioned message even when requireMention is 'always'", () => {
     const cfg: OmadeusChannelConfig = {
-      inbound: {
-        channels: {
-          enabled: true,
-          allowedRoomIds: [10],
-          allowedSenderReferenceIds: [200],
-          requireMention: "outsideAllowlist",
-        },
-      },
+      openClawReferenceId: 900,
+      inbound: { version: 1, direct: { enabled: true, requireMention: "always" } },
     };
     const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "channel", roomId: 10, isMention: false }),
+      inbound: baseInbound({ subscribableKind: "direct", fromReferenceId: selfRef, isMention: false }),
       omadeusCfg: cfg,
       selfReferenceId: selfRef,
+      directCounterpartyReferenceId: 900,
     });
     expect(d.allow).toBe(true);
-  });
-
-  it("channel outsideAllowlist: mention required outside room", () => {
-    const cfg: OmadeusChannelConfig = {
-      inbound: {
-        channels: {
-          enabled: true,
-          allowedRoomIds: [10],
-          allowedSenderReferenceIds: [200],
-          requireMention: "outsideAllowlist",
-        },
-      },
-    };
-    const denied = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "channel", roomId: 99, isMention: false }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(denied.allow).toBe(false);
-
-    const ok = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "channel", roomId: 99, isMention: true }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(ok.allow).toBe(true);
-  });
-
-  it("entities: disallowed kind", () => {
-    const cfg: OmadeusChannelConfig = {
-      inbound: {
-        entities: {
-          enabled: true,
-          allowedKinds: ["task"],
-          allowedSenderReferenceIds: [200],
-          requireMention: "never",
-        },
-      },
-    };
-    const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "project" }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(d.allow).toBe(false);
-    if (!d.allow) expect(d.reason).toBe("entity_kind_not_allowed");
-  });
-
-  it("entities: summary kind allowed when default entity set applies", () => {
-    const cfg: OmadeusChannelConfig = {
-      inbound: {
-        entities: {
-          enabled: true,
-          allowedSenderReferenceIds: [200],
-          requireMention: "always",
-        },
-      },
-    };
-    const d = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "summary", isMention: true }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(d.allow).toBe(true);
-  });
-
-  it("entities: allowed kind with requireMention always", () => {
-    const cfg: OmadeusChannelConfig = {
-      inbound: {
-        entities: {
-          enabled: true,
-          allowedKinds: ["task"],
-          allowedSenderReferenceIds: [200],
-          requireMention: "always",
-        },
-      },
-    };
-    const denied = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "task", isMention: false }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(denied.allow).toBe(false);
-
-    const ok = evaluateOmadeusInboundPolicy({
-      inbound: baseInbound({ subscribableKind: "task", isMention: true }),
-      omadeusCfg: cfg,
-      selfReferenceId: selfRef,
-    });
-    expect(ok.allow).toBe(true);
   });
 });

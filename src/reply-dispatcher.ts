@@ -14,7 +14,7 @@ type Log = {
   debug?: (msg: string) => void;
 };
 
-export type CreateOmadeusReplyDispatcherParams = {
+export type CreateOmadeusTurnDeliveryParams = {
   cfg: OpenClawConfig;
   agentId: string;
   accountId?: string;
@@ -24,7 +24,13 @@ export type CreateOmadeusReplyDispatcherParams = {
   roomId: string;
 };
 
-export function createOmadeusReplyDispatcher(params: CreateOmadeusReplyDispatcherParams) {
+/**
+ * Builds the delivery adapter plus dispatcher/reply options for one Omadeus turn.
+ *
+ * The channel turn kernel owns the dispatcher lifecycle (typing, buffering, settle), so this
+ * only has to describe how an Omadeus room is written to.
+ */
+export function createOmadeusTurnDelivery(params: CreateOmadeusTurnDeliveryParams) {
   const core = getOmadeusRuntime();
   const { cfg, agentId, roomId, accountId } = params;
 
@@ -34,30 +40,37 @@ export function createOmadeusReplyDispatcher(params: CreateOmadeusReplyDispatche
   });
   const chunkMode = core.channel.text.resolveChunkMode(cfg, "omadeus");
 
-  const { dispatcher, replyOptions, markDispatchIdle } =
-    core.channel.reply.createReplyDispatcherWithTyping({
-      responsePrefix: prefixContext.responsePrefix,
-      responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
-      humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, agentId),
+  // Some harnesses (Codex, notably) default direct chats to `message_tool` visible replies, so
+  // final assistant text is dropped unless the model calls `message(action=send)`. Weaker models
+  // often answer without that call, which silently loses the reply. Omadeus rooms are always a
+  // conversation with a human, so default to automatic delivery — but never override an operator
+  // who set `messages.visibleReplies` explicitly.
+  const sourceReplyDeliveryMode =
+    cfg.messages?.visibleReplies === undefined ? ("automatic" as const) : undefined;
+
+  return {
+    delivery: {
+      durable: () => ({ to: String(roomId) }),
       deliver: async (payload: ReplyPayload) => {
         const text = payload.text ?? "";
-        if (!text.trim()) return;
+        if (!text.trim()) {
+          return { visibleReplySent: false };
+        }
 
         const chunks = core.channel.text.chunkTextWithMode(text, textChunkLimit, chunkMode);
         for (const chunk of chunks) {
           await sendOmadeusMessage(params.outboundDeps, { to: String(roomId), text: chunk });
         }
+        return { visibleReplySent: true };
       },
-      onError: (error, info) => {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        params.runtime.error?.(`omadeus ${info.kind} reply failed: ${errMsg}`);
-        params.log.error("reply failed", { kind: info.kind, error: errMsg });
-      },
-    });
-
-  return {
-    dispatcher,
-    replyOptions: { ...replyOptions, onModelSelected: prefixContext.onModelSelected },
-    markDispatchIdle,
+    },
+    dispatcherOptions: {
+      responsePrefix: prefixContext.responsePrefix,
+      responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
+    },
+    replyOptions: {
+      onModelSelected: prefixContext.onModelSelected,
+      ...(sourceReplyDeliveryMode ? { sourceReplyDeliveryMode } : {}),
+    },
   };
 }

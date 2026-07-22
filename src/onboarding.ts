@@ -5,7 +5,6 @@ import {
   listOrganizationMembers,
   listOrganizations,
 } from "./api/auth.api.js";
-import { listMemberChannelViews } from "./api/channel.api.js";
 import { authenticate } from "./auth.js";
 import { getOmadeusChannelConfig, resolveOmadeusAccount } from "./config.js";
 import {
@@ -15,25 +14,13 @@ import {
   resolveOmadeusEnvironment,
   type OmadeusEnvironment,
 } from "./defaults.js";
-import type {
-  OmadeusChannelConfig,
-  OmadeusChannelView,
-  OmadeusInboundEntityKind,
-  OmadeusInboundMentionPolicy,
-  OmadeusOrganizationMember,
-} from "./types.js";
-import { OMADEUS_INBOUND_ENTITY_KINDS } from "./types.js";
+import type { OmadeusChannelConfig, OmadeusOrganizationMember } from "./types.js";
 
 const channel = "omadeus" as const;
 
 /** The OpenClaw bot member. Always used as the messaging allowlist — never user-selectable. */
 const OPENCLAW_MEMBER_EMAIL = "openclaw@xeba.tech";
 
-type SelectOption = {
-  value: string;
-  label: string;
-  hint?: string;
-};
 
 function formatAuthError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
@@ -132,69 +119,6 @@ async function promptOrganizationId(params: {
   return Number(String(raw).trim());
 }
 
-/** TEMPORARILY UNUSED: onboarding no longer prompts for channel selection. */
-async function promptChannelSelection(params: {
-  prompter: WizardPrompter;
-  maestroUrl: string;
-  sessionToken: string;
-  memberReferenceId: number;
-  existingChannelViewIds?: number[];
-}): Promise<OmadeusChannelView[]> {
-  const { prompter, maestroUrl, sessionToken, memberReferenceId, existingChannelViewIds } = params;
-  const channels = await listMemberChannelViews({
-    maestroUrl,
-    sessionToken,
-    memberReferenceId,
-    skip: 0,
-    take: 100,
-  });
-  if (channels.length === 0) {
-    await prompter.note(
-      "No channels found for this account. Channel listening will stay disabled.",
-      "Omadeus channels",
-    );
-    return [];
-  }
-
-  const listenToChannels = await prompter.confirm({
-    message: "Listen for messages in Omadeus channels?",
-    initialValue: (existingChannelViewIds?.length ?? 0) > 0,
-  });
-  if (!listenToChannels) {
-    return [];
-  }
-
-  const selected = await promptMultiSelect({
-    prompter,
-    message: "Which channels should OpenClaw listen to?",
-    options: channels.map((item) => ({
-      value: String(item.id),
-      label: item.title || `Channel ${item.id}`,
-      hint: [item.privateRoomId ? `private:${item.privateRoomId}` : undefined, item.publicRoomId ? `public:${item.publicRoomId}` : undefined]
-        .filter(Boolean)
-        .join(" | "),
-    })),
-    initialValues:
-      existingChannelViewIds && existingChannelViewIds.length > 0
-        ? existingChannelViewIds.map(String)
-        : undefined,
-  });
-  return channels.filter((item) => selected.includes(String(item.id)));
-}
-
-async function promptMultiSelect(params: {
-  prompter: WizardPrompter;
-  message: string;
-  options: SelectOption[];
-  initialValues?: string[];
-}): Promise<string[]> {
-  return params.prompter.multiselect({
-    message: params.message,
-    options: params.options,
-    initialValues: params.initialValues,
-  });
-}
-
 /**
  * Always resolves the OpenClaw bot member (`openclaw@xeba.tech`). The member is
  * looked up via the organization members API with an email filter, so the API
@@ -241,50 +165,6 @@ async function promptCredentials(
     }),
   ).trim();
   return { email, password };
-}
-
-/**
- * Ask whether an @mention is required to trigger OpenClaw in a given surface
- * (channels or entity rooms). DMs never use this — you can't @mention in a DM.
- *
- * TEMPORARILY UNUSED: onboarding no longer prompts for inbound policy.
- */
-async function promptRequireMention(params: {
-  prompter: WizardPrompter;
-  surfaceLabel: string;
-  existing?: OmadeusInboundMentionPolicy;
-}): Promise<OmadeusInboundMentionPolicy> {
-  // Preserve an existing "outsideAllowlist" policy so rerunning onboarding does
-  // not force previously allowlisted users to start @mentioning OpenClaw.
-  if (params.existing === "outsideAllowlist") {
-    return "outsideAllowlist";
-  }
-  const required = await params.prompter.confirm({
-    message: `Require an @mention to trigger OpenClaw in ${params.surfaceLabel}?`,
-    initialValue: params.existing ? params.existing !== "never" : true,
-  });
-  return required ? "always" : "never";
-}
-
-/** TEMPORARILY UNUSED: onboarding no longer prompts for entity room types. */
-async function promptEntityKindSelection(params: {
-  prompter: WizardPrompter;
-  existingKinds?: OmadeusInboundEntityKind[];
-}): Promise<OmadeusInboundEntityKind[]> {
-  const selected = await promptMultiSelect({
-    prompter: params.prompter,
-    message: "Which entity room types should OpenClaw listen to?",
-    options: OMADEUS_INBOUND_ENTITY_KINDS.map((kind) => ({
-      value: kind,
-      label: kind,
-    })),
-    initialValues:
-      params.existingKinds && params.existingKinds.length > 0
-        ? params.existingKinds
-        : [...OMADEUS_INBOUND_ENTITY_KINDS],
-  });
-  const selectedSet = new Set(selected);
-  return OMADEUS_INBOUND_ENTITY_KINDS.filter((kind) => selectedSet.has(kind));
 }
 
 export const omadeusSetupWizard: ChannelSetupWizard = {
@@ -412,17 +292,8 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       "Omadeus messaging allowlist",
     );
 
-    // TEMPORARY: onboarding no longer prompts for channels, entity rooms, or
-    // mention policy. Direct messages with the OpenClaw member are the only
-    // inbound surface — channels and entity rooms are always written disabled,
-    // overwriting anything a previous setup run may have enabled.
     await prompter.note(
-      [
-        `Inbound policy (Jaguar chat):`,
-        `- Direct messages: enabled for ${allowedUserReferenceIds.join(", ")}.`,
-        "- Channels: disabled.",
-        "- Entity rooms: disabled.",
-      ].join("\n"),
+      `Inbound policy (Jaguar chat): the DM with the OpenClaw member (ref ${allowedUserReferenceIds.join(", ")}) is the only room served.`,
       "Omadeus inbound policy",
     );
 
@@ -444,17 +315,6 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
             direct: {
               enabled: true,
               allowedSenderReferenceIds: allowedUserReferenceIds,
-              requireMention: "never",
-            },
-            channels: {
-              enabled: false,
-              allowedRoomIds: [],
-              allowedChannelViewIds: [],
-              requireMention: "never",
-            },
-            entities: {
-              enabled: false,
-              allowedKinds: [],
               requireMention: "never",
             },
           },

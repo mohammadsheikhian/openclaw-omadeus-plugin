@@ -12,53 +12,11 @@ export type OmadeusInboundDirectPolicy = {
   requireMention?: "never" | "always";
 };
 
-export type OmadeusInboundChannelsPolicy = {
-  enabled: boolean;
-  allowedRoomIds?: number[];
-  allowedChannelViewIds?: number[];
-  allowedSenderReferenceIds?: number[];
-  requireMention?: OmadeusInboundMentionPolicy;
-};
 
-/** Jaguar `subscribableKind` values treated as entity chat (not DM, not channel). */
-export type OmadeusInboundEntityKind =
-  | "task"
-  | "nugget"
-  | "project"
-  | "release"
-  | "sprint"
-  | "summary"
-  | "client"
-  | "folder";
-
-/** Jaguar entity chats (`subscribableKind`) — DMs and channel rooms use other values. */
-export const OMADEUS_INBOUND_ENTITY_KINDS: readonly OmadeusInboundEntityKind[] = [
-  "task",
-  "nugget",
-  "project",
-  "release",
-  "sprint",
-  "summary",
-  "client",
-  "folder",
-];
-
-export const OMADEUS_INBOUND_ENTITY_KIND_SET: ReadonlySet<string> = new Set(OMADEUS_INBOUND_ENTITY_KINDS);
-
-export type OmadeusInboundEntitiesPolicy = {
-  enabled: boolean;
-  allowedKinds?: OmadeusInboundEntityKind[];
-  allowedRoomIds?: number[];
-  allowedSenderReferenceIds?: number[];
-  requireMention?: OmadeusInboundMentionPolicy;
-};
-
-/** Jaguar chat ingress policy (DMs, channel rooms, entity rooms). */
+/** Jaguar chat ingress policy. Only the OpenClaw direct room is served. */
 export type OmadeusInboundPolicy = {
   version?: number;
   direct?: OmadeusInboundDirectPolicy;
-  channels?: OmadeusInboundChannelsPolicy;
-  entities?: OmadeusInboundEntitiesPolicy;
 };
 
 export type OmadeusChannelConfig = {
@@ -135,15 +93,6 @@ export type OmadeusOrganizationMember = {
   isSystem?: boolean;
 };
 
-export type OmadeusChannelView = {
-  id: number;
-  title: string;
-  type?: string;
-  privateRoomId?: number | null;
-  publicRoomId?: number | null;
-  privateRoomTitle?: string | null;
-  publicRoomTitle?: string | null;
-};
 
 // ---------------------------------------------------------------------------
 // JWT decoded payload (only fields we need)
@@ -243,17 +192,15 @@ export type OmadeusMessageDetails = {
 };
 
 // ---------------------------------------------------------------------------
-// Dolphin socket events (task/data — assignments, updates, etc.)
 // ---------------------------------------------------------------------------
 
-export type DolphinSocketEvent = Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
 // Inbound message (normalized for OpenClaw)
 // ---------------------------------------------------------------------------
 
 export type OmadeusInboundMessage = {
-  /** Jaguar message id (used for reactions, replies, etc.). */
+  /** Jaguar message id. */
   messageId: number;
   from: string;
   fromReferenceId: number;
@@ -262,8 +209,6 @@ export type OmadeusInboundMessage = {
   roomName: string | null;
   subscribableType: OmadeusSubscribableType;
   subscribableKind: OmadeusSubscribableKind;
-  /** When present, used with `inbound.channels.allowedChannelViewIds`. */
-  channelViewId?: number;
   isMention: boolean;
   timestamp: number;
 };

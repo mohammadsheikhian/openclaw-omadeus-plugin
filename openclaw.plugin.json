@@ -1,92 +1,80 @@
 {
   "id": "omadeus",
-  "channels": ["omadeus"],
+  "channels": [
+    "omadeus"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean" },
+      "enabled": {
+        "type": "boolean"
+      },
       "environment": {
         "type": "string",
-        "enum": ["production", "staging", "dev", "milestone"]
+        "enum": [
+          "production",
+          "staging",
+          "dev",
+          "milestone"
+        ]
       },
-      "email": { "type": "string" },
-      "password": { "type": "string" },
-      "organizationId": { "type": "number" },
-      "sessionToken": { "type": "string" },
+      "email": {
+        "type": "string"
+      },
+      "password": {
+        "type": "string"
+      },
+      "organizationId": {
+        "type": "number"
+      },
+      "sessionToken": {
+        "type": "string"
+      },
       "sessionTokenEnvironment": {
         "type": "string",
-        "enum": ["production", "staging", "dev", "milestone"]
+        "enum": [
+          "production",
+          "staging",
+          "dev",
+          "milestone"
+        ]
       },
-      "openClawReferenceId": { "type": "number" },
+      "openClawReferenceId": {
+        "type": "number"
+      },
       "inbound": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "version": { "type": "integer", "minimum": 1 },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
           "direct": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "enabled": { "type": "boolean" },
-              "allowedSenderReferenceIds": {
-                "type": "array",
-                "items": { "type": "number" }
+              "enabled": {
+                "type": "boolean"
               },
-              "requireMention": { "type": "string", "enum": ["never", "always"] }
-            },
-            "required": ["enabled"]
-          },
-          "channels": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "enabled": { "type": "boolean" },
-              "allowedRoomIds": { "type": "array", "items": { "type": "number" } },
-              "allowedChannelViewIds": { "type": "array", "items": { "type": "number" } },
               "allowedSenderReferenceIds": {
-                "type": "array",
-                "items": { "type": "number" }
-              },
-              "requireMention": {
-                "type": "string",
-                "enum": ["never", "always", "outsideAllowlist"]
-              }
-            },
-            "required": ["enabled"]
-          },
-          "entities": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "enabled": { "type": "boolean" },
-              "allowedKinds": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "enum": [
-                    "task",
-                    "nugget",
-                    "project",
-                    "release",
-                    "sprint",
-                    "summary",
-                    "client",
-                    "folder"
-                  ]
+                  "type": "number"
                 }
-              },
-              "allowedRoomIds": { "type": "array", "items": { "type": "number" } },
-              "allowedSenderReferenceIds": {
-                "type": "array",
-                "items": { "type": "number" }
               },
               "requireMention": {
                 "type": "string",
-                "enum": ["never", "always", "outsideAllowlist"]
+                "enum": [
+                  "never",
+                  "always"
+                ]
               }
             },
-            "required": ["enabled"]
+            "required": [
+              "enabled"
+            ]
           }
         }
       }
@@ -98,88 +86,74 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "enabled": { "type": "boolean" },
+          "enabled": {
+            "type": "boolean"
+          },
           "environment": {
             "type": "string",
-            "enum": ["production", "staging", "dev", "milestone"]
+            "enum": [
+              "production",
+              "staging",
+              "dev",
+              "milestone"
+            ]
           },
-          "email": { "type": "string" },
-          "password": { "type": "string" },
-          "organizationId": { "type": "number" },
-          "sessionToken": { "type": "string" },
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "organizationId": {
+            "type": "number"
+          },
+          "sessionToken": {
+            "type": "string"
+          },
           "sessionTokenEnvironment": {
             "type": "string",
-            "enum": ["production", "staging", "dev", "milestone"]
+            "enum": [
+              "production",
+              "staging",
+              "dev",
+              "milestone"
+            ]
           },
-          "openClawReferenceId": { "type": "number" },
+          "openClawReferenceId": {
+            "type": "number"
+          },
           "inbound": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "version": { "type": "integer", "minimum": 1 },
+              "version": {
+                "type": "integer",
+                "minimum": 1
+              },
               "direct": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "enabled": { "type": "boolean" },
-                  "allowedSenderReferenceIds": {
-                    "type": "array",
-                    "items": { "type": "number" }
+                  "enabled": {
+                    "type": "boolean"
                   },
-                  "requireMention": { "type": "string", "enum": ["never", "always"] }
-                },
-                "required": ["enabled"]
-              },
-              "channels": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": { "type": "boolean" },
-                  "allowedRoomIds": { "type": "array", "items": { "type": "number" } },
-                  "allowedChannelViewIds": { "type": "array", "items": { "type": "number" } },
                   "allowedSenderReferenceIds": {
-                    "type": "array",
-                    "items": { "type": "number" }
-                  },
-                  "requireMention": {
-                    "type": "string",
-                    "enum": ["never", "always", "outsideAllowlist"]
-                  }
-                },
-                "required": ["enabled"]
-              },
-              "entities": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": { "type": "boolean" },
-                  "allowedKinds": {
                     "type": "array",
                     "items": {
-                      "type": "string",
-                      "enum": [
-                        "task",
-                        "nugget",
-                        "project",
-                        "release",
-                        "sprint",
-                        "summary",
-                        "client",
-                        "folder"
-                      ]
+                      "type": "number"
                     }
-                  },
-                  "allowedRoomIds": { "type": "array", "items": { "type": "number" } },
-                  "allowedSenderReferenceIds": {
-                    "type": "array",
-                    "items": { "type": "number" }
                   },
                   "requireMention": {
                     "type": "string",
-                    "enum": ["never", "always", "outsideAllowlist"]
+                    "enum": [
+                      "never",
+                      "always"
+                    ]
                   }
                 },
-                "required": ["enabled"]
+                "required": [
+                  "enabled"
+                ]
               }
             }
           }

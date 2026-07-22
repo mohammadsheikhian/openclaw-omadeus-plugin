@@ -20,6 +20,10 @@ type Log = {
  * Membership isn't on the socket payload, so it's fetched from the `directs` API
  * and cached by room id. A cache miss fetches just that room (`filters.id`); if
  * that still doesn't resolve it, a full list is fetched once as a fallback.
+ *
+ * A failed lookup drops the message, so transient API errors are retried with a
+ * short backoff before giving up — otherwise a one-second blip silently swallows
+ * whatever the user just sent. A genuine outage still fails closed.
  */
 export type DirectCounterpartyResolver = {
   /** Counterparty referenceId for a direct room, or `undefined` if it can't be resolved. */
@@ -35,12 +39,18 @@ function pickCounterparty(direct: OmadeusDirect, selfReferenceId: number): numbe
   return others.length > 0 ? others[0] : undefined;
 }
 
+/** Retry schedule for transient `directs` API failures, in milliseconds. */
+const RESOLVE_RETRY_DELAYS_MS = [250, 1000];
+
 export function createDirectCounterpartyResolver(params: {
   apiOpts: OmadeusApiOptions;
   selfReferenceId: number;
   log: Log;
+  /** Injectable for tests. */
+  sleep?: (ms: number) => Promise<void>;
 }): DirectCounterpartyResolver {
   const { apiOpts, selfReferenceId, log } = params;
+  const sleep = params.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const cache = new Map<number, number>();
 
   const cacheDirects = (directs: OmadeusDirect[]) => {
@@ -52,23 +62,37 @@ export function createDirectCounterpartyResolver(params: {
     }
   };
 
+  const lookup = async (roomId: number): Promise<number | undefined> => {
+    // Miss: fetch just this room first.
+    cacheDirects(await listDirects(apiOpts, { filters: { id: [roomId] } }));
+    if (cache.has(roomId)) return cache.get(roomId);
+
+    // Still unknown (e.g. filter unsupported or stale): fall back to a full list once.
+    cacheDirects(await listDirects(apiOpts, {}));
+    return cache.get(roomId);
+  };
+
   const resolve = async (roomId: number): Promise<number | undefined> => {
     const cached = cache.get(roomId);
     if (cached !== undefined) return cached;
 
-    try {
-      // Miss: fetch just this room first.
-      cacheDirects(await listDirects(apiOpts, { filters: { id: [roomId] } }));
-      if (cache.has(roomId)) return cache.get(roomId);
-
-      // Still unknown (e.g. filter unsupported or stale): fall back to a full list once.
-      cacheDirects(await listDirects(apiOpts, {}));
-      return cache.get(roomId);
-    } catch (err) {
-      log.warn(
-        `omadeus: failed to resolve direct counterparty for room ${roomId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return undefined;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await lookup(roomId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const delayMs = RESOLVE_RETRY_DELAYS_MS[attempt];
+        if (delayMs === undefined) {
+          log.warn(
+            `omadeus: failed to resolve direct counterparty for room ${roomId}: ${message}`,
+          );
+          return undefined;
+        }
+        log.debug?.(
+          `omadeus: direct counterparty lookup for room ${roomId} failed (${message}); retrying in ${delayMs}ms`,
+        );
+        await sleep(delayMs);
+      }
     }
   };
 

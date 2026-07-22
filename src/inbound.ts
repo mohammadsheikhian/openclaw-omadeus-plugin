@@ -56,22 +56,6 @@ function stripLeadingMention(body: string): string {
   return body.replace(/^\*\*@[^*]+\*\*\s*/, "").trim();
 }
 
-function readChannelViewId(metadata: unknown): number | undefined {
-  if (metadata === null || metadata === undefined || typeof metadata !== "object") {
-    return undefined;
-  }
-  const m = metadata as Record<string, unknown>;
-  for (const key of ["channelViewId", "channel_view_id", "viewId", "subscribableViewId"]) {
-    const v = m[key];
-    if (typeof v === "number" && Number.isFinite(v)) {
-      return v;
-    }
-    if (typeof v === "string" && /^\d+$/.test(v.trim())) {
-      return Number(v.trim());
-    }
-  }
-  return undefined;
-}
 
 /**
  * Determine whether a raw Jaguar socket payload is an OmadeusMessage.
@@ -85,9 +69,12 @@ export function isOmadeusMessage(data: unknown): data is OmadeusMessage {
 /**
  * Parse a Jaguar socket message into an OpenClaw inbound message.
  *
- * Returns null when:
- * - The event is not a chat message
- * - The body is empty or the message was removed
+ * Returns null when the event is not a chat message, or the message was removed.
+ *
+ * A message with no usable text (attachment-only, or a bare @mention) is **not** dropped
+ * here: it is returned with empty `content` so the caller can run it through the inbound
+ * policy first and answer only in the room this channel serves. Dropping it at parse time
+ * would either lose it silently or, if answered here, reply in rooms we must stay out of.
  */
 export function parseJaguarMessage(
   msg: OmadeusMessage,
@@ -104,15 +91,10 @@ export function parseJaguarMessage(
   if (msg.removedAt) return null;
 
   const body = (msg.body ?? "").trim();
-  if (!body) return null;
-
   const details = parseDetails(msg.details);
   const mentioned = isBotMentioned(details, opts.selfReferenceId) || hasMentionPrefixInBody(body);
   const content = mentioned ? stripLeadingMention(body) : body;
 
-  if (!content) return null;
-
-  const channelViewId = readChannelViewId(msg.metadata);
 
   return {
     messageId: msg.id,
@@ -123,7 +105,6 @@ export function parseJaguarMessage(
     roomName: msg.roomName,
     subscribableType: msg.subscribableType,
     subscribableKind: msg.subscribableKind,
-    ...(channelViewId !== undefined ? { channelViewId } : {}),
     isMention: mentioned,
     timestamp: msg.createdAtTimestamp
       ? Math.floor(msg.createdAtTimestamp * 1000)
