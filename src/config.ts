@@ -23,7 +23,9 @@ export function resolveOpenClawMemberId(
 
 export function listOmadeusAccountIds(cfg: OpenClawConfig): string[] {
   const section = getOmadeusChannelConfig(cfg);
-  if (!section && !resolveOmadeusEnvCredentials()) return [];
+  if (!section && !resolveOmadeusEnvCredentials() && !process.env.OMADEUS_API_KEY?.trim()) {
+    return [];
+  }
   return [DEFAULT_ACCOUNT_ID];
 }
 
@@ -40,6 +42,7 @@ export function resolveOmadeusAccount(params: {
   const environment = resolveOmadeusEnvironment(section.environment);
   const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
   const envCredentials = resolveOmadeusEnvCredentials();
+  const apiKey = section.apiKey?.trim() || process.env.OMADEUS_API_KEY?.trim() || "";
   const email = section.email?.trim() || envCredentials?.email || "";
   const password = section.password?.trim() || envCredentials?.password || "";
   const orgId = section.organizationId ?? envCredentials?.organizationId;
@@ -53,13 +56,15 @@ export function resolveOmadeusAccount(params: {
   const hasConfigCredentials = Boolean(
     section.email?.trim() && section.password?.trim() && section.organizationId,
   );
-  const credentialSource = hasConfigCredentials
-    ? "config"
-    : hasCredentials
-      ? "env"
-      : hasSessionToken
-        ? "session"
-        : "none";
+  const credentialSource = apiKey
+    ? "apikey"
+    : hasConfigCredentials
+      ? "config"
+      : hasCredentials
+        ? "env"
+        : hasSessionToken
+          ? "session"
+          : "none";
 
   return {
     accountId: DEFAULT_ACCOUNT_ID,
@@ -73,6 +78,7 @@ export function resolveOmadeusAccount(params: {
     password,
     organizationId: orgId ?? 0,
     ...(hasSessionToken ? { sessionToken } : {}),
+    ...(apiKey ? { apiKey } : {}),
     credentialSource,
   };
 }

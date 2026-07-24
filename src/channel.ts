@@ -18,6 +18,7 @@ import {
   type OpenClawConfig,
 } from "../runtime-api.js";
 import { generateTemporaryId } from "./utils/http.util.js";
+import { verifyApiKey } from "./api/auth.api.js";
 import {
   getOmadeusChannelConfig,
   listOmadeusAccountIds,
@@ -33,7 +34,11 @@ import { SentMessageTracker } from "./sent-message-tracker.js";
 import { omadeusSetupAdapter } from "./setup-core.js";
 import { omadeusSetupWizard } from "./setup-surface.js";
 import { createJaguarSocketClient, type JaguarSocketClient } from "./socket/jaguar.socket.js";
-import { createTokenManager, type OmadeusTokenManager } from "./token.js";
+import {
+  createApiKeyTokenManager,
+  createTokenManager,
+  type OmadeusTokenManager,
+} from "./token.js";
 import type { ResolvedOmadeusAccount as Account } from "./types.js";
 
 const CHANNEL_ID = "omadeus" as const;
@@ -107,6 +112,7 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
     "organizationId",
     "sessionToken",
     "sessionTokenEnvironment",
+    "apiKey",
     "openClawMemberId",
     "openClawReferenceId",
     "inbound",
@@ -276,7 +282,8 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
     ...omadeusConfigAdapter,
     isConfigured: (account) => !isUnconfigured(account),
     unconfiguredReason: () =>
-      "Omadeus requires email, password, and organizationId. Run: openclaw setup omadeus",
+      "Omadeus requires an apiKey, or email, password, and organizationId. " +
+      "Run: openclaw setup omadeus",
     describeAccount: (account) => ({
       accountId: account.accountId,
       name: account.name,
@@ -437,12 +444,12 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       }
 
       const hasCachedSession = Boolean(account.sessionToken?.trim());
-      if (!account.password && !hasCachedSession) {
-        ctx.log?.warn("[omadeus] skipping start: password/sessionToken not set");
+      if (!account.apiKey && !account.password && !hasCachedSession) {
+        ctx.log?.warn("[omadeus] skipping start: apiKey/password/sessionToken not set");
         ctx.setStatus({
           accountId: account.accountId,
           running: false,
-          lastError: "password/sessionToken not set",
+          lastError: "apiKey/password/sessionToken not set",
         });
         return;
       }
@@ -450,38 +457,61 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       const log = ctx.log ?? { info: () => {}, warn: () => {}, error: () => {} };
       let isConnected = false;
 
-      const tokenManager = createTokenManager({
-        casUrl: account.casUrl,
-        maestroUrl: account.maestroUrl,
-        email: account.email,
-        password: account.password,
-        organizationId: account.organizationId,
-        initialToken: account.sessionToken,
-        onRefresh: (token) => {
-          log.info("[omadeus] token refreshed");
-          void persistSessionToken(token, account.environment).catch((err) =>
-            log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
-          );
-        },
-        onError: (err) => {
-          log.error(`[omadeus] token refresh failed: ${err.message}`);
-          ctx.setStatus({ accountId: account.accountId, lastError: err.message });
-        },
-      });
+      let tokenManager: OmadeusTokenManager;
+      let selfReferenceId: number;
 
-      try {
-        await tokenManager.refresh();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.error(`[omadeus] initial auth failed: ${msg}`);
-        ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
-        return;
+      if (account.apiKey) {
+        // API-key mode: nothing to refresh or persist. Verify the key once so
+        // a revoked/typoed key fails loudly at start, and resolve the member
+        // identity from it (there is no JWT payload to read).
+        tokenManager = createApiKeyTokenManager(account.apiKey);
+        try {
+          const identity = await verifyApiKey({
+            maestroUrl: account.maestroUrl,
+            apiKey: account.apiKey,
+          });
+          selfReferenceId = identity.memberId;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`[omadeus] API key verification failed: ${msg}`);
+          ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
+          return;
+        }
+      } else {
+        const casTokenManager = createTokenManager({
+          casUrl: account.casUrl,
+          maestroUrl: account.maestroUrl,
+          email: account.email,
+          password: account.password,
+          organizationId: account.organizationId,
+          initialToken: account.sessionToken,
+          onRefresh: (token) => {
+            log.info("[omadeus] token refreshed");
+            void persistSessionToken(token, account.environment).catch((err) =>
+              log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
+            );
+          },
+          onError: (err) => {
+            log.error(`[omadeus] token refresh failed: ${err.message}`);
+            ctx.setStatus({ accountId: account.accountId, lastError: err.message });
+          },
+        });
+
+        try {
+          await casTokenManager.refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`[omadeus] initial auth failed: ${msg}`);
+          ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
+          return;
+        }
+
+        casTokenManager.startAutoRefresh();
+        tokenManager = casTokenManager;
+        selfReferenceId = casTokenManager.getPayload().referenceId;
       }
 
-      tokenManager.startAutoRefresh();
       gatewayState.tokenManager = tokenManager;
-
-      const selfReferenceId = tokenManager.getPayload().referenceId;
 
       const sentTracker = new SentMessageTracker();
       gatewayState.sentTracker = sentTracker;

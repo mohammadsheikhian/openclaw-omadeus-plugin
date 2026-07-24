@@ -22,6 +22,8 @@ const tokenManager: OmadeusTokenManager = {
   startAutoRefresh: () => {},
   stopAutoRefresh: () => {},
   needsRefresh: () => false,
+  authorizationHeader: () => "Bearer token",
+  wsToken: () => "token",
 };
 
 let client: OmadeusSocketClient | null = null;

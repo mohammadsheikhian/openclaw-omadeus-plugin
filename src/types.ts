@@ -21,6 +21,12 @@ export type OmadeusInboundPolicy = {
 export type OmadeusChannelConfig = {
   enabled?: boolean;
   environment?: OmadeusEnvironment;
+  /**
+   * Omadeus API key (sent as `Authorization: ApiToken <key>`). When set, the
+   * plugin authenticates with it directly — no CAS login, no session token
+   * refresh — and `email`/`password` are not needed.
+   */
+  apiKey?: string;
   email?: string;
   password?: string;
   organizationId?: number;
@@ -55,8 +61,10 @@ export type ResolvedOmadeusAccount = {
   password: string;
   organizationId: number;
   sessionToken?: string;
-  /** "none" if neither config/env credentials nor cached session token exist */
-  credentialSource: "config" | "env" | "session" | "none";
+  /** Omadeus API key; when set it replaces the CAS email/password flow. */
+  apiKey?: string;
+  /** "none" if no api key, config/env credentials or cached session token exist */
+  credentialSource: "apikey" | "config" | "env" | "session" | "none";
 };
 
 // ---------------------------------------------------------------------------

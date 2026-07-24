@@ -61,7 +61,7 @@ export function createOmadeusSocketClient(opts: OmadeusSocketOptions): OmadeusSo
 
   function buildWsUrl(): string {
     const base = maestroUrl.replace(/^http/, "ws");
-    const token = tokenManager.getToken();
+    const token = tokenManager.wsToken();
     return `${base}/${pathSuffix}?token=${encodeURIComponent(token)}`;
   }
 

@@ -4,6 +4,7 @@ import {
   configureOpenClawBot,
   listOrganizationMembers,
   listOrganizations,
+  verifyApiKey,
 } from "./api/auth.api.js";
 import { authenticate } from "./auth.js";
 import { getOmadeusChannelConfig, resolveOmadeusAccount } from "./config.js";
@@ -127,12 +128,12 @@ async function promptOrganizationId(params: {
  */
 async function loadOpenClawMember(params: {
   maestroUrl: string;
-  sessionToken: string;
+  authorization: string;
   organizationId: number;
 }): Promise<OmadeusOrganizationMember> {
   const members = await listOrganizationMembers({
     maestroUrl: params.maestroUrl,
-    sessionToken: params.sessionToken,
+    authorization: params.authorization,
     organizationId: params.organizationId,
     email: OPENCLAW_MEMBER_EMAIL,
   });
@@ -210,6 +211,77 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
     );
     const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
 
+    const authMethod = await prompter.select({
+      message: "How do you want to authenticate to Omadeus?",
+      options: [
+        {
+          value: "apikey",
+          label: "API key (recommended)",
+          hint: "Create one in Omadeus, no password stored",
+        },
+        {
+          value: "password",
+          label: "Email and password",
+          hint: "Legacy CAS login with session refresh",
+        },
+      ],
+      initialValue: section.apiKey ? "apikey" : "password",
+    });
+
+    if (authMethod === "apikey") {
+      const apiKey = String(
+        await prompter.text({
+          message: "Omadeus API key",
+          sensitive: true,
+          initialValue: section.apiKey,
+          validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
+        }),
+      ).trim();
+
+      const identity = await verifyApiKey({ maestroUrl, apiKey });
+      await prompter.note(
+        `API key verified (member ${identity.memberId}, organization ${identity.organizationId}).`,
+        "Omadeus authentication",
+      );
+
+      const authorization = `ApiToken ${apiKey}`;
+      const openClawMember = await loadOpenClawMember({
+        maestroUrl,
+        authorization,
+        organizationId: identity.organizationId,
+      });
+
+      await configureOpenClawBot({ maestroUrl, authorization });
+
+      await prompter.note(
+        `Inbound policy (Jaguar chat): the DM with the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}) is the only room served.`,
+        "Omadeus inbound policy",
+      );
+
+      next = {
+        ...next,
+        channels: {
+          ...next.channels,
+          omadeus: {
+            enabled: true,
+            environment,
+            apiKey,
+            organizationId: identity.organizationId,
+            openClawMemberId: openClawMember.referenceId,
+            inbound: {
+              version: 1,
+              direct: {
+                enabled: true,
+                requireMention: "never",
+              },
+            },
+          },
+        },
+      };
+
+      return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
+    }
+
     if (account.credentialSource === "none") {
       await noteOmadeusAuthHelp(prompter, environment);
     }
@@ -272,13 +344,14 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       throw new Error("Authentication did not return an Omadeus member reference ID.");
     }
 
+    const sessionAuthorization = `Bearer ${sessionToken}`;
     const openClawMember = await loadOpenClawMember({
       maestroUrl,
-      sessionToken,
+      authorization: sessionAuthorization,
       organizationId,
     });
 
-    await configureOpenClawBot({ maestroUrl, sessionToken });
+    await configureOpenClawBot({ maestroUrl, authorization: sessionAuthorization });
 
     // The DM with the OpenClaw member is the only room served; the inbound policy
     // recognises it by `openClawMemberId`. There is no separate sender allowlist —
