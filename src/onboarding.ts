@@ -282,7 +282,7 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
 
     // The messaging allowlist is always the OpenClaw bot member. It is not
     // user-selectable. The logged-in user can still reach their own instance: their DM
-    // with the OpenClaw member is recognised by `openClawReferenceId` and always admitted.
+    // with the OpenClaw member is recognised by `openClawMemberId` and always admitted.
     //
     // TEMPORARY: the logged-in user's own reference id (`selfReferenceId`) is
     // deliberately left out of the allowlist — only DMs with the OpenClaw bot work.
@@ -309,7 +309,7 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
           organizationId,
           sessionToken,
           sessionTokenEnvironment: environment,
-          openClawReferenceId: openClawMember.referenceId,
+          openClawMemberId: openClawMember.referenceId,
           inbound: {
             version: 1,
             direct: {

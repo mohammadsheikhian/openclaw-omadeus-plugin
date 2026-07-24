@@ -11,6 +11,16 @@ export function getOmadeusChannelConfig(cfg: OpenClawConfig): OmadeusChannelConf
     | undefined;
 }
 
+/**
+ * The OpenClaw member id, honouring the legacy `openClawReferenceId` key so
+ * configs written before the rename keep working until setup is re-run.
+ */
+export function resolveOpenClawMemberId(
+  section: OmadeusChannelConfig | undefined,
+): number | undefined {
+  return section?.openClawMemberId ?? section?.openClawReferenceId;
+}
+
 export function listOmadeusAccountIds(cfg: OpenClawConfig): string[] {
   const section = getOmadeusChannelConfig(cfg);
   if (!section && !resolveOmadeusEnvCredentials()) return [];

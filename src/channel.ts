@@ -23,6 +23,7 @@ import {
   listOmadeusAccountIds,
   resolveDefaultOmadeusAccountId,
   resolveOmadeusAccount,
+  resolveOpenClawMemberId,
 } from "./config.js";
 import { parseJaguarMessage } from "./inbound.js";
 import { createOmadeusMessageHandler } from "./message-handler.js";
@@ -106,6 +107,8 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
     "organizationId",
     "sessionToken",
     "sessionTokenEnvironment",
+    "openClawMemberId",
+    "openClawReferenceId",
     "inbound",
   ],
   // Keep adapter contract satisfied even though Omadeus no longer uses DM allowlists.
@@ -379,15 +382,16 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         if (
           entry.enabled !== false &&
           entry.configured === true &&
-          getOmadeusChannelConfig(getOmadeusRuntime().config.current() as OpenClawConfig)
-            ?.openClawReferenceId === undefined
+          resolveOpenClawMemberId(
+            getOmadeusChannelConfig(getOmadeusRuntime().config.current() as OpenClawConfig),
+          ) === undefined
         ) {
           issues.push({
             channel: CHANNEL_ID,
             accountId: String(entry.accountId ?? DEFAULT_ACCOUNT_ID),
             kind: "config",
             message:
-              "Omadeus openClawReferenceId is missing; no direct messages will be answered.",
+              "Omadeus openClawMemberId is missing; no direct messages will be answered.",
             fix: "Run: openclaw setup omadeus",
           });
         }
