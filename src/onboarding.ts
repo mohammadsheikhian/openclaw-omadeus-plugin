@@ -280,20 +280,11 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
 
     await configureOpenClawBot({ maestroUrl, sessionToken });
 
-    // The messaging allowlist is always the OpenClaw bot member. It is not
-    // user-selectable. The logged-in user can still reach their own instance: their DM
-    // with the OpenClaw member is recognised by `openClawMemberId` and always admitted.
-    //
-    // TEMPORARY: the logged-in user's own reference id (`selfReferenceId`) is
-    // deliberately left out of the allowlist — only DMs with the OpenClaw bot work.
-    const allowedUserReferenceIds = [openClawMember.referenceId];
+    // The DM with the OpenClaw member is the only room served; the inbound policy
+    // recognises it by `openClawMemberId`. There is no separate sender allowlist —
+    // the room itself is the allowlist.
     await prompter.note(
-      `Messaging allowlist set to the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}).`,
-      "Omadeus messaging allowlist",
-    );
-
-    await prompter.note(
-      `Inbound policy (Jaguar chat): the DM with the OpenClaw member (ref ${allowedUserReferenceIds.join(", ")}) is the only room served.`,
+      `Inbound policy (Jaguar chat): the DM with the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}) is the only room served.`,
       "Omadeus inbound policy",
     );
 
@@ -314,7 +305,6 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
             version: 1,
             direct: {
               enabled: true,
-              allowedSenderReferenceIds: allowedUserReferenceIds,
               requireMention: "never",
             },
           },

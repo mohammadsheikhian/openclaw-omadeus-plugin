@@ -29,7 +29,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // Only the DM whose counterparty is the OpenClaw member is answered.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [201], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -57,7 +57,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // The allowlist no longer admits anyone on its own: room identity is the only gate.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [201], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     for (const fromReferenceId of [200, 201]) {
@@ -78,7 +78,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // 38 is not the OpenClaw member, regardless of the allowlist.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -100,7 +100,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     const cfg: OmadeusChannelConfig = {
       openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300, selfRef], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -117,7 +117,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     const cfg: OmadeusChannelConfig = {
       openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -136,7 +136,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     const cfg: OmadeusChannelConfig = {
       openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300, selfRef], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -155,7 +155,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     const cfg: OmadeusChannelConfig = {
       openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300, selfRef, 38], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -172,7 +172,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // Message genuinely sent BY the counterparty (38), who is not allowlisted.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -190,7 +190,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // person's DM is not the OpenClaw room.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const fromPeer = evaluateOmadeusInboundPolicy({
@@ -209,7 +209,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // treat that as a message addressed to it and reply — even though 210 is allowlisted.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -229,7 +229,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     const cfg: OmadeusChannelConfig = {
       openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     // Resolver reports self as the counterparty...
@@ -261,7 +261,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     const cfg: OmadeusChannelConfig = {
       openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     for (const fromReferenceId of [999, selfRef, 210]) {

@@ -8,7 +8,6 @@ export type OmadeusInboundMentionPolicy = "never" | "always" | "outsideAllowlist
 
 export type OmadeusInboundDirectPolicy = {
   enabled: boolean;
-  allowedSenderReferenceIds?: number[];
   requireMention?: "never" | "always";
 };
 
