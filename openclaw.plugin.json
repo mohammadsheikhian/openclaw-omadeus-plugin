@@ -19,6 +19,9 @@
           "milestone"
         ]
       },
+      "apiKey": {
+        "type": "string"
+      },
       "email": {
         "type": "string"
       },
@@ -41,6 +44,9 @@
         ]
       },
       "openClawReferenceId": {
+        "type": "number"
+      },
+      "openClawMemberId": {
         "type": "number"
       },
       "inbound": {
@@ -98,6 +104,9 @@
               "milestone"
             ]
           },
+          "apiKey": {
+            "type": "string"
+          },
           "email": {
             "type": "string"
           },
@@ -120,6 +129,9 @@
             ]
           },
           "openClawReferenceId": {
+            "type": "number"
+          },
+          "openClawMemberId": {
             "type": "number"
           },
           "inbound": {
@@ -163,6 +175,10 @@
         "environment": {
           "label": "Environment"
         },
+        "apiKey": {
+          "label": "API key",
+          "sensitive": true
+        },
         "email": {
           "label": "Email"
         },
@@ -183,7 +199,11 @@
           "advanced": true
         },
         "openClawReferenceId": {
-          "label": "OpenClaw member reference ID",
+          "label": "Legacy OpenClaw member reference ID",
+          "advanced": true
+        },
+        "openClawMemberId": {
+          "label": "OpenClaw member ID",
           "advanced": true
         },
         "inbound": {
