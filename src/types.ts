@@ -8,7 +8,6 @@ export type OmadeusInboundMentionPolicy = "never" | "always" | "outsideAllowlist
 
 export type OmadeusInboundDirectPolicy = {
   enabled: boolean;
-  allowedSenderReferenceIds?: number[];
   requireMention?: "never" | "always";
 };
 
@@ -22,6 +21,12 @@ export type OmadeusInboundPolicy = {
 export type OmadeusChannelConfig = {
   enabled?: boolean;
   environment?: OmadeusEnvironment;
+  /**
+   * Omadeus API key (sent as `Authorization: ApiToken <key>`). When set, the
+   * plugin authenticates with it directly — no CAS login, no session token
+   * refresh — and `email`/`password` are not needed.
+   */
+  apiKey?: string;
   email?: string;
   password?: string;
   organizationId?: number;
@@ -30,13 +35,15 @@ export type OmadeusChannelConfig = {
   /** Environment the cached sessionToken was minted under (must match `environment`). */
   sessionTokenEnvironment?: OmadeusEnvironment;
   /**
-   * Reference ID of the OpenClaw Omadeus member, resolved during setup.
+   * ID of the OpenClaw Omadeus member, resolved during setup.
    *
    * OpenClaw is a distinct Omadeus user, but the gateway authenticates as the operator
    * and posts as OpenClaw via `asOpenclaw`. The two identities are therefore only
    * distinguishable by this id, which is what lets the inbound policy tell the operator's
    * own OpenClaw DM apart from a DM with a real person.
    */
+  openClawMemberId?: number;
+  /** @deprecated Legacy name for `openClawMemberId`; read-only fallback for old configs. */
   openClawReferenceId?: number;
   /** Jaguar chat ingress allowlists and mention rules. */
   inbound?: OmadeusInboundPolicy;
@@ -54,8 +61,10 @@ export type ResolvedOmadeusAccount = {
   password: string;
   organizationId: number;
   sessionToken?: string;
-  /** "none" if neither config/env credentials nor cached session token exist */
-  credentialSource: "config" | "env" | "session" | "none";
+  /** Omadeus API key; when set it replaces the CAS email/password flow. */
+  apiKey?: string;
+  /** "none" if no api key, config/env credentials or cached session token exist */
+  credentialSource: "apikey" | "config" | "env" | "session" | "none";
 };
 
 // ---------------------------------------------------------------------------
@@ -82,6 +91,17 @@ export type OmadeusOrganization = {
   membersCount: number;
   createdAt: string;
 };
+
+/**
+ * Member-level OpenClaw connection state, mirrored in Dolphin and owned by
+ * Jaguar. Jaguar only honours `asOpenclaw` send/see while this is `connected`.
+ *
+ * The plugin reports `connecting` when setup completes and `connected` when its
+ * websocket opens. `disconnected` is not written by the plugin: the failure
+ * modes that matter (crash, OOM-kill, deleted deployment, uninstalled plugin)
+ * cannot report anything, so it is left to a server-side liveness check.
+ */
+export type OmadeusOpenClawStatus = "disconnected" | "connecting" | "connected";
 
 export type OmadeusOrganizationMember = {
   referenceId: number;

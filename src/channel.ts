@@ -18,11 +18,13 @@ import {
   type OpenClawConfig,
 } from "../runtime-api.js";
 import { generateTemporaryId } from "./utils/http.util.js";
+import { configureOpenClawBot, verifyApiKey } from "./api/auth.api.js";
 import {
   getOmadeusChannelConfig,
   listOmadeusAccountIds,
   resolveDefaultOmadeusAccountId,
   resolveOmadeusAccount,
+  resolveOpenClawMemberId,
 } from "./config.js";
 import { parseJaguarMessage } from "./inbound.js";
 import { createOmadeusMessageHandler } from "./message-handler.js";
@@ -32,7 +34,11 @@ import { SentMessageTracker } from "./sent-message-tracker.js";
 import { omadeusSetupAdapter } from "./setup-core.js";
 import { omadeusSetupWizard } from "./setup-surface.js";
 import { createJaguarSocketClient, type JaguarSocketClient } from "./socket/jaguar.socket.js";
-import { createTokenManager, type OmadeusTokenManager } from "./token.js";
+import {
+  createApiKeyTokenManager,
+  createTokenManager,
+  type OmadeusTokenManager,
+} from "./token.js";
 import type { ResolvedOmadeusAccount as Account } from "./types.js";
 
 const CHANNEL_ID = "omadeus" as const;
@@ -106,6 +112,9 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
     "organizationId",
     "sessionToken",
     "sessionTokenEnvironment",
+    "apiKey",
+    "openClawMemberId",
+    "openClawReferenceId",
     "inbound",
   ],
   // Keep adapter contract satisfied even though Omadeus no longer uses DM allowlists.
@@ -273,7 +282,8 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
     ...omadeusConfigAdapter,
     isConfigured: (account) => !isUnconfigured(account),
     unconfiguredReason: () =>
-      "Omadeus requires email, password, and organizationId. Run: openclaw setup omadeus",
+      "Omadeus requires an apiKey, or email, password, and organizationId. " +
+      "Run: openclaw setup omadeus",
     describeAccount: (account) => ({
       accountId: account.accountId,
       name: account.name,
@@ -379,15 +389,16 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         if (
           entry.enabled !== false &&
           entry.configured === true &&
-          getOmadeusChannelConfig(getOmadeusRuntime().config.current() as OpenClawConfig)
-            ?.openClawReferenceId === undefined
+          resolveOpenClawMemberId(
+            getOmadeusChannelConfig(getOmadeusRuntime().config.current() as OpenClawConfig),
+          ) === undefined
         ) {
           issues.push({
             channel: CHANNEL_ID,
             accountId: String(entry.accountId ?? DEFAULT_ACCOUNT_ID),
             kind: "config",
             message:
-              "Omadeus openClawReferenceId is missing; no direct messages will be answered.",
+              "Omadeus openClawMemberId is missing; no direct messages will be answered.",
             fix: "Run: openclaw setup omadeus",
           });
         }
@@ -433,12 +444,12 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       }
 
       const hasCachedSession = Boolean(account.sessionToken?.trim());
-      if (!account.password && !hasCachedSession) {
-        ctx.log?.warn("[omadeus] skipping start: password/sessionToken not set");
+      if (!account.apiKey && !account.password && !hasCachedSession) {
+        ctx.log?.warn("[omadeus] skipping start: apiKey/password/sessionToken not set");
         ctx.setStatus({
           accountId: account.accountId,
           running: false,
-          lastError: "password/sessionToken not set",
+          lastError: "apiKey/password/sessionToken not set",
         });
         return;
       }
@@ -446,38 +457,61 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       const log = ctx.log ?? { info: () => {}, warn: () => {}, error: () => {} };
       let isConnected = false;
 
-      const tokenManager = createTokenManager({
-        casUrl: account.casUrl,
-        maestroUrl: account.maestroUrl,
-        email: account.email,
-        password: account.password,
-        organizationId: account.organizationId,
-        initialToken: account.sessionToken,
-        onRefresh: (token) => {
-          log.info("[omadeus] token refreshed");
-          void persistSessionToken(token, account.environment).catch((err) =>
-            log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
-          );
-        },
-        onError: (err) => {
-          log.error(`[omadeus] token refresh failed: ${err.message}`);
-          ctx.setStatus({ accountId: account.accountId, lastError: err.message });
-        },
-      });
+      let tokenManager: OmadeusTokenManager;
+      let selfReferenceId: number;
 
-      try {
-        await tokenManager.refresh();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.error(`[omadeus] initial auth failed: ${msg}`);
-        ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
-        return;
+      if (account.apiKey) {
+        // API-key mode: nothing to refresh or persist. Verify the key once so
+        // a revoked/typoed key fails loudly at start, and resolve the member
+        // identity from it (there is no JWT payload to read).
+        tokenManager = createApiKeyTokenManager(account.apiKey);
+        try {
+          const identity = await verifyApiKey({
+            maestroUrl: account.maestroUrl,
+            apiKey: account.apiKey,
+          });
+          selfReferenceId = identity.memberId;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`[omadeus] API key verification failed: ${msg}`);
+          ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
+          return;
+        }
+      } else {
+        const casTokenManager = createTokenManager({
+          casUrl: account.casUrl,
+          maestroUrl: account.maestroUrl,
+          email: account.email,
+          password: account.password,
+          organizationId: account.organizationId,
+          initialToken: account.sessionToken,
+          onRefresh: (token) => {
+            log.info("[omadeus] token refreshed");
+            void persistSessionToken(token, account.environment).catch((err) =>
+              log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
+            );
+          },
+          onError: (err) => {
+            log.error(`[omadeus] token refresh failed: ${err.message}`);
+            ctx.setStatus({ accountId: account.accountId, lastError: err.message });
+          },
+        });
+
+        try {
+          await casTokenManager.refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`[omadeus] initial auth failed: ${msg}`);
+          ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
+          return;
+        }
+
+        casTokenManager.startAutoRefresh();
+        tokenManager = casTokenManager;
+        selfReferenceId = casTokenManager.getPayload().referenceId;
       }
 
-      tokenManager.startAutoRefresh();
       gatewayState.tokenManager = tokenManager;
-
-      const selfReferenceId = tokenManager.getPayload().referenceId;
 
       const sentTracker = new SentMessageTracker();
       gatewayState.sentTracker = sentTracker;
@@ -485,6 +519,28 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       const outboundDeps: OutboundDeps = {
         apiOpts: { maestroUrl: account.maestroUrl, tokenManager },
         sentTracker,
+      };
+
+      /**
+       * Report `connected` to Omadeus once the websocket is up. Never throws:
+       * the socket is already healthy at this point, and losing the gateway
+       * over a status call would be a worse failure than a stale status.
+       */
+      const announceConnected = () => {
+        configureOpenClawBot({
+          maestroUrl: account.maestroUrl,
+          authorization: tokenManager.authorizationHeader(),
+          openclawStatus: "connected",
+        })
+          .then(() => log.info("[omadeus] reported OpenClaw status: connected"))
+          .catch((err) =>
+            log.warn(
+              "[omadeus] failed to report connected status; the OpenClaw DM will " +
+                `keep going to the setup assistant: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+            ),
+          );
       };
 
       const handleMessage = createOmadeusMessageHandler({
@@ -538,6 +594,15 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
           if (!isConnected) {
             isConnected = true;
             ctx.setStatus({ accountId: account.accountId, connected: true, lastConnectedAt: Date.now() });
+            // Tell Omadeus the gateway is live. Until this lands, Jaguar keeps
+            // routing the member's OpenClaw DM to the setup assistant and
+            // refuses `asOpenclaw` on send/see, so the bot cannot answer.
+            //
+            // Fire-and-forget: a failure here must not tear down a healthy
+            // socket, and `onDisconnect` clears `isConnected`, so the next
+            // reconnect retries. Hosted instances reach this path too — they
+            // boot with OPENCLAW_SKIP_ONBOARDING=1 and never run the wizard.
+            announceConnected();
           }
         },
         onDisconnect: () => {
