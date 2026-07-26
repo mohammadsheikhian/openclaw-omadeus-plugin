@@ -1,6 +1,7 @@
 import { getCasSession, setCasSession } from "../store.js";
 import type {
   CasAuthorizationCodeResponse,
+  OmadeusOpenClawStatus,
   OmadeusOrganizationMember,
   OmadeusOrganization,
   OmadeusSessionTokenResponse,
@@ -187,12 +188,22 @@ export async function listOrganizationMembers(params: {
   return (await res.json()) as OmadeusOrganizationMember[];
 }
 
+/**
+ * Report the member's OpenClaw status to Omadeus.
+ *
+ * Jaguar routes the member's OpenClaw DM on this value: while it is anything
+ * other than `connected` it will not honour `asOpenclaw` on send/see, so the
+ * gateway cannot answer until this has been set. `connected` is reported from
+ * the websocket `open` handler rather than from setup completion — a finished
+ * wizard only means credentials exist, not that the gateway reached Jaguar.
+ */
 export async function configureOpenClawBot(params: {
   maestroUrl: string;
   /** Full Authorization header value (`Bearer <jwt>` or `ApiToken <key>`). */
   authorization: string;
+  openclawStatus: OmadeusOpenClawStatus;
 }): Promise<void> {
-  const { maestroUrl, authorization } = params;
+  const { maestroUrl, authorization, openclawStatus } = params;
   const url = `${maestroUrl}/dolphin/apiv1/settings/bots/openclaw`;
   const res = await omadeusFetch("Omadeus configure OpenClaw bot", url, {
     method: "POST",
@@ -200,7 +211,7 @@ export async function configureOpenClawBot(params: {
       Authorization: authorization,
       "Content-Type": "application/json;charset=UTF-8",
     },
-    body: JSON.stringify({ isOpenclawConfigured: true }),
+    body: JSON.stringify({ openclawStatus }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

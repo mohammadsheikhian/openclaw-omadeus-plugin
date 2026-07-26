@@ -92,6 +92,17 @@ export type OmadeusOrganization = {
   createdAt: string;
 };
 
+/**
+ * Member-level OpenClaw connection state, mirrored in Dolphin and owned by
+ * Jaguar. Jaguar only honours `asOpenclaw` send/see while this is `connected`.
+ *
+ * The plugin reports `connecting` when setup completes and `connected` when its
+ * websocket opens. `disconnected` is not written by the plugin: the failure
+ * modes that matter (crash, OOM-kill, deleted deployment, uninstalled plugin)
+ * cannot report anything, so it is left to a server-side liveness check.
+ */
+export type OmadeusOpenClawStatus = "disconnected" | "connecting" | "connected";
+
 export type OmadeusOrganizationMember = {
   referenceId: number;
   id: number;

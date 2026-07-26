@@ -251,7 +251,13 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
         organizationId: identity.organizationId,
       });
 
-      await configureOpenClawBot({ maestroUrl, authorization });
+      // Setup is complete, but the gateway has not reached Jaguar yet.
+      // `connected` is reported from the websocket `open` handler in channel.ts.
+      await configureOpenClawBot({
+        maestroUrl,
+        authorization,
+        openclawStatus: "connecting",
+      });
 
       await prompter.note(
         `Inbound policy (Jaguar chat): the DM with the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}) is the only room served.`,
@@ -351,7 +357,13 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       organizationId,
     });
 
-    await configureOpenClawBot({ maestroUrl, authorization: sessionAuthorization });
+    // See the note above: the gateway announces `connected` itself once its
+    // websocket opens.
+    await configureOpenClawBot({
+      maestroUrl,
+      authorization: sessionAuthorization,
+      openclawStatus: "connecting",
+    });
 
     // The DM with the OpenClaw member is the only room served; the inbound policy
     // recognises it by `openClawMemberId`. There is no separate sender allowlist —

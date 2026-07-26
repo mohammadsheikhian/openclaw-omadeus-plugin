@@ -18,7 +18,7 @@ import {
   type OpenClawConfig,
 } from "../runtime-api.js";
 import { generateTemporaryId } from "./utils/http.util.js";
-import { verifyApiKey } from "./api/auth.api.js";
+import { configureOpenClawBot, verifyApiKey } from "./api/auth.api.js";
 import {
   getOmadeusChannelConfig,
   listOmadeusAccountIds,
@@ -521,6 +521,28 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         sentTracker,
       };
 
+      /**
+       * Report `connected` to Omadeus once the websocket is up. Never throws:
+       * the socket is already healthy at this point, and losing the gateway
+       * over a status call would be a worse failure than a stale status.
+       */
+      const announceConnected = () => {
+        configureOpenClawBot({
+          maestroUrl: account.maestroUrl,
+          authorization: tokenManager.authorizationHeader(),
+          openclawStatus: "connected",
+        })
+          .then(() => log.info("[omadeus] reported OpenClaw status: connected"))
+          .catch((err) =>
+            log.warn(
+              "[omadeus] failed to report connected status; the OpenClaw DM will " +
+                `keep going to the setup assistant: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+            ),
+          );
+      };
+
       const handleMessage = createOmadeusMessageHandler({
         cfg,
         runtime: ctx.runtime,
@@ -572,6 +594,15 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
           if (!isConnected) {
             isConnected = true;
             ctx.setStatus({ accountId: account.accountId, connected: true, lastConnectedAt: Date.now() });
+            // Tell Omadeus the gateway is live. Until this lands, Jaguar keeps
+            // routing the member's OpenClaw DM to the setup assistant and
+            // refuses `asOpenclaw` on send/see, so the bot cannot answer.
+            //
+            // Fire-and-forget: a failure here must not tear down a healthy
+            // socket, and `onDisconnect` clears `isConnected`, so the next
+            // reconnect retries. Hosted instances reach this path too — they
+            // boot with OPENCLAW_SKIP_ONBOARDING=1 and never run the wizard.
+            announceConnected();
           }
         },
         onDisconnect: () => {
