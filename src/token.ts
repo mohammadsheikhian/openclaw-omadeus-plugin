@@ -19,7 +19,36 @@ export type OmadeusTokenManager = {
   startAutoRefresh(): void;
   stopAutoRefresh(): void;
   needsRefresh(): boolean;
+  /** Full `Authorization` header value: `Bearer <jwt>` or `ApiToken <key>`. */
+  authorizationHeader(): string;
+  /**
+   * Value for the WebSocket `token` query parameter. Bearer connections send
+   * the raw JWT (Jaguar loads it as-is); API-key connections send the full
+   * `ApiToken <key>` form so Jaguar can recognise the scheme.
+   */
+  wsToken(): string;
 };
+
+/**
+ * Token manager backed by a static Omadeus API key: nothing to refresh,
+ * nothing to decode. `getPayload` is unavailable — identity is resolved via
+ * the API-key verification endpoint instead of a JWT payload.
+ */
+export function createApiKeyTokenManager(apiKey: string): OmadeusTokenManager {
+  const header = `ApiToken ${apiKey}`;
+  return {
+    getToken: () => apiKey,
+    getPayload: () => {
+      throw new Error("Omadeus: API-key auth carries no JWT payload");
+    },
+    refresh: async () => {},
+    startAutoRefresh: () => {},
+    stopAutoRefresh: () => {},
+    needsRefresh: () => false,
+    authorizationHeader: () => header,
+    wsToken: () => header,
+  };
+}
 
 export function createTokenManager(params: {
   casUrl: string;
@@ -90,6 +119,12 @@ export function createTokenManager(params: {
 
   return {
     getToken() {
+      return currentToken;
+    },
+    authorizationHeader() {
+      return `Bearer ${currentToken}`;
+    },
+    wsToken() {
       return currentToken;
     },
     getPayload() {

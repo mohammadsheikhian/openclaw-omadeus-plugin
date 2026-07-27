@@ -1,3 +1,4 @@
+import { resolveOpenClawMemberId } from "./config.js";
 import {
   type OmadeusChannelConfig,
   type OmadeusInboundMessage,
@@ -67,9 +68,9 @@ export function evaluateOmadeusInboundPolicy(params: {
     return { allow: false, reason: "direct_disabled" };
   }
 
-  const openClawReferenceId = omadeusCfg?.openClawReferenceId;
+  const openClawMemberId = resolveOpenClawMemberId(omadeusCfg);
 
-  if (openClawReferenceId !== undefined && inbound.fromReferenceId === openClawReferenceId) {
+  if (openClawMemberId !== undefined && inbound.fromReferenceId === openClawMemberId) {
     return {
       allow: false,
       reason: "direct_openclaw_authored",
@@ -80,7 +81,7 @@ export function evaluateOmadeusInboundPolicy(params: {
   // Collapses "self-DM" and "membership lookup failed" into one drop: if the directs API is
   // failing, OpenClaw goes quiet rather than answering the wrong room.
   const isOpenClawDirect =
-    openClawReferenceId !== undefined && directCounterpartyReferenceId === openClawReferenceId;
+    openClawMemberId !== undefined && directCounterpartyReferenceId === openClawMemberId;
   if (!isOpenClawDirect) {
     return {
       allow: false,
@@ -88,7 +89,7 @@ export function evaluateOmadeusInboundPolicy(params: {
       details: {
         fromReferenceId: inbound.fromReferenceId,
         counterpartyReferenceId: directCounterpartyReferenceId,
-        openClawReferenceId,
+        openClawMemberId,
       },
     };
   }

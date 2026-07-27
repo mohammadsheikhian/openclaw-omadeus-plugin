@@ -6,9 +6,9 @@ export type OmadeusApiOptions = {
   tokenManager: OmadeusTokenManager;
 };
 
-export function authHeaders(token: string): Record<string, string> {
+export function authHeaders(authorization: string): Record<string, string> {
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: authorization,
     "Content-Type": "application/json",
   };
 }
@@ -18,13 +18,13 @@ export async function apiFetch(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  const token = opts.tokenManager.getToken();
-  if (!token) throw new Error("Omadeus: not authenticated");
+  if (!opts.tokenManager.getToken()) throw new Error("Omadeus: not authenticated");
+  const authorization = opts.tokenManager.authorizationHeader();
   const url = `${opts.maestroUrl}${path}`;
   try {
     return await fetch(url, {
       ...init,
-      headers: { ...authHeaders(token), ...(init?.headers as Record<string, string>) },
+      headers: { ...authHeaders(authorization), ...(init?.headers as Record<string, string>) },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

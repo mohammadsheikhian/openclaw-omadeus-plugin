@@ -1,6 +1,7 @@
 import { getCasSession, setCasSession } from "../store.js";
 import type {
   CasAuthorizationCodeResponse,
+  OmadeusOpenClawStatus,
   OmadeusOrganizationMember,
   OmadeusOrganization,
   OmadeusSessionTokenResponse,
@@ -136,13 +137,39 @@ export async function listOrganizations(params: {
   return (await res.json()) as OmadeusOrganization[];
 }
 
+/**
+ * Verify an Omadeus API key and resolve the identity it is bound to.
+ * Dolphin authenticates the request with the key itself.
+ */
+export async function verifyApiKey(params: {
+  maestroUrl: string;
+  apiKey: string;
+}): Promise<{ memberId: number; organizationId: number }> {
+  const { maestroUrl, apiKey } = params;
+  const url = `${maestroUrl}/dolphin/apiv1/apikeys`;
+  const res = await omadeusFetch("Omadeus verify API key", url, {
+    method: "GET",
+    headers: { Authorization: `ApiToken ${apiKey}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Omadeus API key verification failed (${res.status}): ${text}`);
+  }
+  const body = (await res.json()) as { memberId?: number; organizationId?: number };
+  if (typeof body.memberId !== "number" || typeof body.organizationId !== "number") {
+    throw new Error("Omadeus API key verification response missing memberId/organizationId");
+  }
+  return { memberId: body.memberId, organizationId: body.organizationId };
+}
+
 export async function listOrganizationMembers(params: {
   maestroUrl: string;
-  sessionToken: string;
+  /** Full Authorization header value (`Bearer <jwt>` or `ApiToken <key>`). */
+  authorization: string;
   organizationId: number;
   email?: string;
 }): Promise<OmadeusOrganizationMember[]> {
-  const { maestroUrl, sessionToken, organizationId, email } = params;
+  const { maestroUrl, authorization, organizationId, email } = params;
   const search = new URLSearchParams();
   if (email) search.set("email", email);
   const qs = search.toString();
@@ -150,7 +177,7 @@ export async function listOrganizationMembers(params: {
   const res = await omadeusFetch("Omadeus list organization members", url, {
     method: "LIST",
     headers: {
-      Authorization: `Bearer ${sessionToken}`,
+      Authorization: authorization,
       "Accept": "application/json, text/plain, */*",
     },
   });
@@ -161,19 +188,30 @@ export async function listOrganizationMembers(params: {
   return (await res.json()) as OmadeusOrganizationMember[];
 }
 
+/**
+ * Report the member's OpenClaw status to Omadeus.
+ *
+ * Jaguar routes the member's OpenClaw DM on this value: while it is anything
+ * other than `connected` it will not honour `asOpenclaw` on send/see, so the
+ * gateway cannot answer until this has been set. `connected` is reported from
+ * the websocket `open` handler rather than from setup completion — a finished
+ * wizard only means credentials exist, not that the gateway reached Jaguar.
+ */
 export async function configureOpenClawBot(params: {
   maestroUrl: string;
-  sessionToken: string;
+  /** Full Authorization header value (`Bearer <jwt>` or `ApiToken <key>`). */
+  authorization: string;
+  openclawStatus: OmadeusOpenClawStatus;
 }): Promise<void> {
-  const { maestroUrl, sessionToken } = params;
+  const { maestroUrl, authorization, openclawStatus } = params;
   const url = `${maestroUrl}/dolphin/apiv1/settings/bots/openclaw`;
   const res = await omadeusFetch("Omadeus configure OpenClaw bot", url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${sessionToken}`,
+      Authorization: authorization,
       "Content-Type": "application/json;charset=UTF-8",
     },
-    body: JSON.stringify({ isOpenclawConfigured: true }),
+    body: JSON.stringify({ openclawStatus }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

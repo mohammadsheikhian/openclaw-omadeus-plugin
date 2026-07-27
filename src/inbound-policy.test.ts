@@ -29,7 +29,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // Only the DM whose counterparty is the OpenClaw member is answered.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [201], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -42,7 +42,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
   });
 
   it("default config blocks direct messages (no OpenClaw member configured)", () => {
-    // Without `openClawReferenceId` there is no room that can qualify, so every
+    // Without `openClawMemberId` there is no room that can qualify, so every
     // direct is dropped rather than defaulting open.
     const d = evaluateOmadeusInboundPolicy({
       inbound: baseInbound({ subscribableKind: "direct" }),
@@ -57,7 +57,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // The allowlist no longer admits anyone on its own: room identity is the only gate.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [201], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     for (const fromReferenceId of [200, 201]) {
@@ -78,7 +78,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // 38 is not the OpenClaw member, regardless of the allowlist.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -95,12 +95,12 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // The setup flow's DM: the room is {operator (self, 100), OpenClaw (300)}. OpenClaw is a
     // distinct Omadeus user but the gateway authenticates as the operator, so a message the
     // operator types to OpenClaw arrives from=self with OpenClaw as the counterparty — the
-    // same shape as "operator talking to a third party". `openClawReferenceId` is what tells
+    // same shape as "operator talking to a third party". `openClawMemberId` is what tells
     // the two apart; without it every message to OpenClaw is dropped as self-authored.
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 300,
+      openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300, selfRef], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -115,9 +115,9 @@ describe("evaluateOmadeusInboundPolicy", () => {
   it("allows the operator's direct to OpenClaw even when the allowlist omits them", () => {
     // The OpenClaw room is the operator's own instance; it never consults the allowlist.
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 300,
+      openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -134,9 +134,9 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // The SentMessageTracker normally suppresses these at ingestion; this is the backstop
     // that keeps a missed echo from becoming a reply loop.
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 300,
+      openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300, selfRef], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -153,9 +153,9 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // The OpenClaw exception is scoped to the OpenClaw room: a DM with a real person (38)
     // keeps main's protection, so the operator's messages to them are never answered.
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 300,
+      openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300, selfRef, 38], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -172,7 +172,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // Message genuinely sent BY the counterparty (38), who is not allowlisted.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -190,7 +190,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // person's DM is not the OpenClaw room.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const fromPeer = evaluateOmadeusInboundPolicy({
@@ -209,7 +209,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // treat that as a message addressed to it and reply — even though 210 is allowlisted.
     const cfg: OmadeusChannelConfig = {
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     const d = evaluateOmadeusInboundPolicy({
@@ -227,9 +227,9 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // finds no non-self member and returns undefined, which used to fall through to the
     // self-sender escape hatch and get processed. A notes-to-self room is not OpenClaw.
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 300,
+      openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [300], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     // Resolver reports self as the counterparty...
@@ -259,9 +259,9 @@ describe("evaluateOmadeusInboundPolicy", () => {
     // now drop: if the directs API is down OpenClaw goes quiet rather than answering a
     // room it cannot identify.
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 300,
+      openClawMemberId: 300,
       inbound: {
-        direct: { enabled: true, allowedSenderReferenceIds: [selfRef, 210], requireMention: "never" },
+        direct: { enabled: true, requireMention: "never" },
       },
     };
     for (const fromReferenceId of [999, selfRef, 210]) {
@@ -279,7 +279,7 @@ describe("evaluateOmadeusInboundPolicy", () => {
   // The channel serves the OpenClaw DM only; every other Jaguar surface is refused here
   // rather than relying on config to keep it disabled.
   it("drops every non-direct room kind", () => {
-    const cfg: OmadeusChannelConfig = { openClawReferenceId: 900 };
+    const cfg: OmadeusChannelConfig = { openClawMemberId: 900 };
     for (const kind of ["channel", "task", "nugget", "project", "sprint", "release"] as const) {
       const d = evaluateOmadeusInboundPolicy({
         inbound: baseInbound({ subscribableKind: kind, fromReferenceId: 900 }),
@@ -297,7 +297,7 @@ describe("evaluateOmadeusInboundPolicy — mention handling", () => {
   // would drop every message and silently brick the channel.
   it("admits an unmentioned message even when requireMention is 'always'", () => {
     const cfg: OmadeusChannelConfig = {
-      openClawReferenceId: 900,
+      openClawMemberId: 900,
       inbound: { version: 1, direct: { enabled: true, requireMention: "always" } },
     };
     const d = evaluateOmadeusInboundPolicy({

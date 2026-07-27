@@ -22,9 +22,10 @@ function readSetupNumberField(input: Record<string, unknown>, key: string): numb
 export const omadeusSetupAdapter: ChannelSetupAdapter = {
   validateInput: ({ input }) => {
     const rawInput = input as Record<string, unknown>;
+    const apiKey = readSetupStringField(rawInput, "apiKey");
     const email = readSetupStringField(rawInput, "email");
-    if (!email && !input.useEnv) {
-      return "Omadeus requires --email (or use OMADEUS_EMAIL env var).";
+    if (!apiKey && !email && !input.useEnv) {
+      return "Omadeus requires --apiKey or --email (or the OMADEUS_API_KEY/OMADEUS_EMAIL env vars).";
     }
     return null;
   },
@@ -32,6 +33,7 @@ export const omadeusSetupAdapter: ChannelSetupAdapter = {
     const rawInput = input as Record<string, unknown>;
     const environmentRaw = readSetupStringField(rawInput, "environment");
     const environment = environmentRaw ? resolveOmadeusEnvironment(environmentRaw) : undefined;
+    const apiKey = readSetupStringField(rawInput, "apiKey");
     const email = readSetupStringField(rawInput, "email");
     const password = input.password?.trim() || undefined;
     const organizationId = readSetupNumberField(rawInput, "organizationId");
@@ -53,6 +55,7 @@ export const omadeusSetupAdapter: ChannelSetupAdapter = {
           ...omadeusPrevious,
           enabled: true,
           ...(environment ? { environment } : {}),
+          ...(apiKey ? { apiKey } : {}),
           ...(email ? { email } : {}),
           ...(password ? { password } : {}),
           ...(organizationId ? { organizationId } : {}),
