@@ -47,7 +47,7 @@ Upstream services (see the `omadeus` and `jaguar` repos' own `AGENTS.md` for det
   session JWT.
 - **maestro** — the gateway host all REST and WS URLs are built from.
 
-Environments (`src/defaults.ts`): `production`, `staging`, `dev`, `milestone` — each a
+Environments (`src/defaults.ts`): `production`, `staging`, `dev`, `milestone`, `nightly` — each a
 `casUrl` + `maestroUrl` pair.
 
 ### Entry points
