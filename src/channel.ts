@@ -28,6 +28,10 @@ import {
 } from "./config.js";
 import { parseJaguarMessage } from "./inbound.js";
 import { createOmadeusMessageHandler } from "./message-handler.js";
+import {
+  createOpenClawRoomResolver,
+  type OpenClawRoomResolver,
+} from "./openclaw-room.js";
 import { sendOmadeusMessage, type OutboundDeps } from "./outbound.js";
 import { getOmadeusRuntime } from "./runtime.js";
 import { SentMessageTracker } from "./sent-message-tracker.js";
@@ -47,7 +51,8 @@ const gatewayState: {
   tokenManager: OmadeusTokenManager | null;
   jaguar: JaguarSocketClient | null;
   sentTracker: SentMessageTracker | null;
-} = { tokenManager: null, jaguar: null, sentTracker: null };
+  openClawRoom: OpenClawRoomResolver | null;
+} = { tokenManager: null, jaguar: null, sentTracker: null, openClawRoom: null };
 
 const isUnconfigured = (account: Account) => account.credentialSource === "none";
 
@@ -147,6 +152,36 @@ function normalizeOmadeusRoomId(raw: string): string | undefined {
   return /^\d+$/.test(trimmed) ? trimmed : undefined;
 }
 
+/**
+ * Resolve an outbound target to a numeric Jaguar room id, falling back to the OpenClaw DM
+ * when the caller named no target at all.
+ *
+ * Isolated cron runs are why this fallback exists. A job created without a `delivery` block
+ * still announces its result, and OpenClaw picks this channel because it is the only one
+ * configured — but the fresh run session carries no delivery context, so `to` arrives empty
+ * and every announce died with "Delivering to Omadeus requires target". This channel serves
+ * exactly one room, so an empty target is unambiguous: it means the operator's OpenClaw DM.
+ * See `src/openclaw-room.ts` for how that room is identified and why it stays user-scoped.
+ *
+ * A **non-empty** target that does not parse still fails. Quietly rerouting those into the
+ * DM would deliver a message to a room the caller did not ask for.
+ */
+function resolveOutboundRoomId(rawTo: string | undefined): string | undefined {
+  const trimmed = rawTo?.trim() ?? "";
+  if (trimmed) {
+    return normalizeOmadeusRoomId(trimmed);
+  }
+  const resolver = gatewayState.openClawRoom;
+  const cached = resolver?.peek();
+  if (cached) {
+    return cached;
+  }
+  // Cold cache — the connect-time prime failed or has not landed yet. `resolveTarget` is a
+  // synchronous SDK hook, so this attempt still fails; kick a refresh so the next one lands.
+  resolver?.warm();
+  return undefined;
+}
+
 function readStringParam(params: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = params[key];
@@ -166,6 +201,12 @@ async function sendOmadeusText(params: {
   if (!gatewayState.jaguar || !gatewayState.tokenManager) {
     throw new Error("Omadeus: not connected. Is the gateway running with Omadeus enabled?");
   }
+  // The `message` adapter reaches here without passing through `outbound.resolveTarget`,
+  // so apply the same empty-target fallback rather than POSTing to `/rooms//messages`.
+  const to = resolveOutboundRoomId(params.to);
+  if (!to) {
+    throw missingTargetError("Omadeus", "room:<roomId> or numeric room id");
+  }
   const deps: OutboundDeps = {
     apiOpts: {
       maestroUrl: resolveOmadeusAccount({ cfg: params.cfg }).maestroUrl,
@@ -173,7 +214,7 @@ async function sendOmadeusText(params: {
     },
     sentTracker: gatewayState.sentTracker ?? undefined,
   };
-  return await sendOmadeusMessage(deps, { to: params.to, text: params.text });
+  return await sendOmadeusMessage(deps, { to, text: params.text });
 }
 
 export const omadeusPlugin: ChannelPlugin<Account> = {
@@ -197,6 +238,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
   agentPrompt: {
     messageToolHints: () => [
       "- Omadeus routing: **send** uses the **room id** of this DM (`to` / `target`, e.g. `room:117947` or `117947`).",
+      "- Omitting the target is allowed: it delivers to the operator's OpenClaw DM, which is the only room this channel serves.",
       "- This channel only serves the OpenClaw direct room. There are no group, channel, or entity rooms to target.",
       "- `session_status` / SessionKey: **OpenClaw** gateway only. Use the inbound SessionKey or \"current\" — never a fake `task/<...>` string from a title.",
       "- Reply in chat with plain text; use the message tool only for proactive sends.",
@@ -240,20 +282,20 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
           return actionError("Omadeus send requires `message`.", "Missing message.");
         }
 
+        // An omitted target falls back to the OpenClaw DM (see resolveOutboundRoomId); a
+        // target that was given but does not parse is still an error.
         const rawTarget = readStringParam(ctx.params, ["to", "target", "chatId", "chat_id", "roomId"]);
-        if (!rawTarget) {
-          return actionError(
-            "Omadeus send requires a target: room:<roomId> or a numeric room id.",
-            "Missing target.",
-          );
-        }
-
-        const roomId = normalizeOmadeusRoomId(rawTarget);
+        const roomId = resolveOutboundRoomId(rawTarget);
         if (!roomId) {
-          return actionError(
-            `Omadeus send could not resolve target \`${rawTarget}\`. Use room:<roomId> or a numeric room id.`,
-            "Unresolved target.",
-          );
+          return rawTarget
+            ? actionError(
+                `Omadeus send could not resolve target \`${rawTarget}\`. Use room:<roomId> or a numeric room id.`,
+                "Unresolved target.",
+              )
+            : actionError(
+                "Omadeus send requires a target: room:<roomId> or a numeric room id.",
+                "Missing target.",
+              );
         }
 
         try {
@@ -358,8 +400,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       sendText: async ({ cfg, to, text }) => await sendOmadeusText({ cfg, to, text }),
     }),
     resolveTarget: ({ to }) => {
-      const trimmed = to?.trim() ?? "";
-      const id = normalizeOmadeusRoomId(trimmed);
+      const id = resolveOutboundRoomId(to);
       if (!id) {
         return {
           ok: false,
@@ -521,6 +562,15 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         sentTracker,
       };
 
+      // Resolves against this account's own token, so it can only ever yield the operator's
+      // own DM with the OpenClaw bot. Rebuilt on every start, which is also how the cache is
+      // invalidated — `reload.configPrefixes` restarts the account on a `channels.omadeus` edit.
+      const openClawRoom = createOpenClawRoomResolver({
+        apiOpts: outboundDeps.apiOpts,
+        log,
+      });
+      gatewayState.openClawRoom = openClawRoom;
+
       /**
        * Report `connected` to Omadeus once the websocket is up. Never throws:
        * the socket is already healthy at this point, and losing the gateway
@@ -549,6 +599,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         log,
         outboundDeps,
         selfReferenceId,
+        openClawRoom,
       });
 
       const jaguar = createJaguarSocketClient({
@@ -603,6 +654,10 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
             // reconnect retries. Hosted instances reach this path too — they
             // boot with OPENCLAW_SKIP_ONBOARDING=1 and never run the wizard.
             announceConnected();
+            // Prime the DM room cache now, while nothing is waiting on it. A cron job can
+            // fire the moment the gateway is up, and `outbound.resolveTarget` is synchronous
+            // — it can only read a cache that is already warm.
+            openClawRoom.warm();
           }
         },
         onDisconnect: () => {
@@ -630,6 +685,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         gatewayState.tokenManager = null;
         gatewayState.jaguar = null;
         gatewayState.sentTracker = null;
+        gatewayState.openClawRoom = null;
         lastPersistedToken = null;
         ctx.setStatus({
           accountId: account.accountId,

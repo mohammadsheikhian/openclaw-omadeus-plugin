@@ -69,6 +69,8 @@ Environments (`src/defaults.ts`): `production`, `staging`, `dev`, `milestone`, `
 - `src/inbound-policy.ts` — admission. Direct-room-only; everything else drops.
 - `src/direct-resolver.ts` — resolves a DM's *counterparty* (cached), which is what admission
   keys off.
+- `src/openclaw-room.ts` — resolves the account's DM room with the OpenClaw bot (via Jaguar's
+  `directs/openclaw_bot` alias), so targetless outbound deliveries have somewhere to land.
 - `src/sent-message-tracker.ts` — suppresses echoes of our own sends (2 min TTL, 500 entries).
 - `src/reply-dispatcher.ts` — builds the delivery adapter + reply options for one turn.
 - `src/token.ts` — session JWT with auto-refresh 5 minutes before expiry.
@@ -121,6 +123,35 @@ to OpenClaw arrive *self-authored*. Gating on sender would let the operator's DM
 through. `src/direct-resolver.ts` resolves who the DM is *with*; that is what the policy checks.
 A failed lookup drops the message rather than guessing — OpenClaw goes quiet instead of
 answering the wrong room.
+
+### Cron announces arrive with no target
+
+A cron job created without a `delivery` block still announces its result. OpenClaw resolves
+the *channel* fine — Omadeus is usually the only one configured, so `channel: "last"` falls
+through to it — but an isolated run gets a fresh session with no delivery context, so `to`
+arrives **empty**. That used to fail every run with `Delivering to Omadeus requires target
+room:<roomId> or numeric room id`.
+
+`resolveOutboundRoomId` in `src/channel.ts` fills an empty target from
+`src/openclaw-room.ts`. Two constraints hold that safe, and both must survive any refactor:
+
+- **Only an empty target is filled in.** A target that was supplied but does not parse is
+  still rejected. Rerouting those would deliver a message to a room nobody asked for.
+- **The room comes from Jaguar, not from client-side matching.** `GET /directs/openclaw_bot`
+  is a server-side alias (`DirectFacade.operation_get` in the jaguar repo) that resolves the
+  room for `Member.current()`. The request carries no room or member id, so it cannot name
+  another user's DM; scoping is the server's job.
+
+**Do not rebuild this on `listDirects`.** The LIST route filters
+`Direct.latest_message_id IS NOT NULL`, so a DM that has never been used is invisible to it —
+exactly the state a freshly provisioned hosted instance is in. The `openclaw_bot` GET has no
+such filter, needs no paging, and does not depend on `openClawMemberId` being configured.
+A 404 from it means "no DM yet" and is deliberately **not** cached, so a room created later
+in the session still resolves.
+
+`outbound.resolveTarget` is a **synchronous** SDK hook, so it can only read a cache that is
+already warm. The cache is primed on socket connect, refreshed from every admitted inbound
+(`remember`), and a cold miss kicks a background refresh so the next attempt lands.
 
 ### Control commands are authorized in this room
 
@@ -190,7 +221,8 @@ npm run build && openclaw plugins install . --link   # then restart the gateway
 ## Behavior reference
 
 - `send` targets the DM's room id: `room:123` or `123`. There is no entity/task target
-  resolution — `N123`/`T123` were removed with the nugget features.
+  resolution — `N123`/`T123` were removed with the nugget features. Omitting the target
+  delivers to the operator's OpenClaw DM (see the cron gotcha above).
 - A message with no usable text (attachment-only, or a bare `**@mention**`) is answered with
   a short "text only" reply — but only *after* the policy admits it, so this never fires in
   rooms the channel does not serve. `parseJaguarMessage` deliberately returns such messages

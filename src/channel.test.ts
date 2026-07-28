@@ -56,6 +56,28 @@ describe("omadeus message actions", () => {
   });
 });
 
+describe("omadeus outbound target resolution", () => {
+  const resolveTarget = omadeusPlugin.outbound?.resolveTarget;
+
+  it("accepts room:<id> and bare numeric room ids", () => {
+    expect(resolveTarget?.({ to: "room:117947" })).toEqual({ ok: true, to: "117947" });
+    expect(resolveTarget?.({ to: "117947" })).toEqual({ ok: true, to: "117947" });
+  });
+
+  // The empty-target fallback must never widen into "anything unparseable goes to the DM":
+  // that would deliver a message to a room the caller did not ask for.
+  it("rejects a named target it cannot parse instead of rerouting it to the DM", () => {
+    const result = resolveTarget?.({ to: "channel:general" });
+    expect(result?.ok).toBe(false);
+  });
+
+  // No gateway running here, so there is no resolved DM room to fall back to.
+  it("rejects an empty target when the OpenClaw DM room is unknown", () => {
+    expect(resolveTarget?.({ to: "" })?.ok).toBe(false);
+    expect(resolveTarget?.({})?.ok).toBe(false);
+  });
+});
+
 describe("omadeus message adapter", () => {
   it("declares a send path and the agent-dispatch ack policy", () => {
     expect(omadeusPlugin.message?.send).toBeDefined();

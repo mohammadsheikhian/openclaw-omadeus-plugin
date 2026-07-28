@@ -13,6 +13,7 @@ import { createOmadeusTurnDelivery } from "./reply-dispatcher.js";
 import { getOmadeusChannelConfig } from "./config.js";
 import { evaluateOmadeusInboundPolicy } from "./inbound-policy.js";
 import { getOmadeusRuntime } from "./runtime.js";
+import type { OpenClawRoomResolver } from "./openclaw-room.js";
 import type { OmadeusInboundMessage } from "./types.js";
 
 type Log = {
@@ -29,10 +30,12 @@ export type OmadeusMessageHandlerDeps = {
   outboundDeps: OutboundDeps;
   /** Authenticated Omadeus user reference id. */
   selfReferenceId: number;
+  /** Kept warm from admitted traffic so targetless outbound sends have a room. */
+  openClawRoom?: Pick<OpenClawRoomResolver, "remember">;
 };
 
 export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
-  const { cfg, runtime, log, outboundDeps, selfReferenceId } = deps;
+  const { cfg, runtime, log, outboundDeps, selfReferenceId, openClawRoom } = deps;
   const core = getOmadeusRuntime();
   const omadeusCfg = getOmadeusChannelConfig(cfg);
 
@@ -92,6 +95,11 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       });
       return;
     }
+
+    // Past the policy this room is, by construction, the operator's DM with the OpenClaw
+    // member — the exact room a targetless cron announce needs. Recording it here keeps the
+    // cache correct for free and covers the case where the connect-time lookup failed.
+    openClawRoom?.remember(inbound.roomId);
 
     const useAccessGroups =
       (cfg.commands as Record<string, unknown> | undefined)?.useAccessGroups !== false;

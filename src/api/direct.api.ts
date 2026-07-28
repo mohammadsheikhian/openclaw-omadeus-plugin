@@ -46,6 +46,39 @@ function parseDirects(payload: unknown): OmadeusDirect[] {
 }
 
 /**
+ * Fetch the caller's direct room with the organization's OpenClaw bot member.
+ *
+ * `GET /directs/openclaw_bot` — `openclaw_bot` is a server-side alias handled by Jaguar's
+ * `DirectFacade.operation_get`, which resolves the room for `Member.current()`. That makes
+ * the scoping Jaguar's job: the room is derived from the authenticated identity, so this can
+ * only ever return the caller's own DM.
+ *
+ * Returns `undefined` for 404, which is Jaguar's answer for "that direct does not exist yet"
+ * — a normal state on a fresh account, not a failure.
+ *
+ * Prefer this over filtering {@link listDirects}: the LIST route drops directs with no
+ * messages (`latest_message_id IS NOT NULL`), so a never-used OpenClaw DM is invisible there.
+ */
+export async function getOpenClawDirect(
+  opts: OmadeusApiOptions,
+  params: { signal?: AbortSignal } = {},
+): Promise<OmadeusDirect | undefined> {
+  const res = await jaguarFetch(opts, "/directs/openclaw_bot", {
+    method: "GET",
+    signal: params.signal,
+  });
+  if (res.status === 404) {
+    return undefined;
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Omadeus get OpenClaw direct failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  const [direct] = parseDirects([await res.json()]);
+  return direct;
+}
+
+/**
  * List Jaguar direct rooms with their members. Mirrors the frontend `directs` LIST call:
  * `filters` are encoded as `key=IN(v1,v2,…)` query params. Pass `{ id: [roomId] }` to fetch a
  * single direct by its room id.

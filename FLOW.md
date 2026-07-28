@@ -77,18 +77,21 @@ From there, `src/message-handler.ts` runs this order — note that **debounce co
 3. **Inbound policy** — `src/inbound-policy.ts`. Drops with a reason, logged at `info`:
    `not_direct_room`, `direct_disabled`, `direct_openclaw_authored`,
    `direct_not_openclaw_room`. `requireMention` is not enforced — see AGENTS.md.
-4. **Control-command gate** — `resolveControlCommandGate(...)` with an explicit authorizer,
+4. **Record the DM room** — `openClawRoom.remember(roomId)`. Past the policy the room is by
+   construction the operator's OpenClaw DM, so this keeps the outbound fallback cache exact
+   and free. See `src/openclaw-room.ts`.
+5. **Control-command gate** — `resolveControlCommandGate(...)` with an explicit authorizer,
    since the only room served is the operator's own DM.
-5. **Text check** — an admitted message with no usable text (attachment-only, bare mention)
+6. **Text check** — an admitted message with no usable text (attachment-only, bare mention)
    is acknowledged and answered with a short "text only" reply, then the turn ends. This runs
    *after* admission so it can never fire in another room.
-6. **Acknowledge** — `seeMessage(...)` marks the source message(s) read, fire-and-forget.
+7. **Acknowledge** — `seeMessage(...)` marks the source message(s) read, fire-and-forget.
    Sent with `asOpenclaw: true`, so Jaguar records the receipt against the OpenClaw bot
    rather than the operator (whose own message it is).
-7. **Route** — `resolveAgentRoute({ peer: { kind: "direct", id: senderId } })` yields
+8. **Route** — `resolveAgentRoute({ peer: { kind: "direct", id: senderId } })` yields
    `sessionKey` / `agentId` / `accountId`.
-8. **System event** — a one-line preview is queued for the agent's ambient context.
-9. **Dispatch** — `core.channel.inbound.run(...)` with an `{ ingest, resolveTurn }` adapter.
+9. **System event** — a one-line preview is queued for the agent's ambient context.
+10. **Dispatch** — `core.channel.inbound.run(...)` with an `{ ingest, resolveTurn }` adapter.
 
 The turn kernel then owns ingest → classify → preflight → resolve → record → dispatch →
 finalize. `resolveTurn` builds the context via `core.channel.inbound.buildContext(...)` and
@@ -134,6 +137,13 @@ Two callers reach it:
 
 Targets are room ids only: `room:123` or `123`. `outbound.resolveTarget` and
 `messaging.targetResolver` both reject anything else.
+
+An **empty** target is the one exception: `resolveOutboundRoomId` falls back to the OpenClaw
+DM room, resolved by `src/openclaw-room.ts` via `GET /jaguar/apiv1/directs/openclaw_bot` — a
+server-side alias that returns the room for the authenticated member. Isolated cron announces
+arrive that way: OpenClaw picks this channel because it is the only one configured, but the
+fresh run session has no delivery context to name a room with. A target that was given but
+does not parse is still rejected. See the cron delivery gotcha in AGENTS.md.
 
 ## 7. Message actions
 
