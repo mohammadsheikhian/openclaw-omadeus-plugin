@@ -1,17 +1,17 @@
-import { jaguarFetch, type OmadeusApiOptions } from "../utils/http.util.js";
+import { jaguarFetch, OmadeusHttpError, type OmadeusApiOptions } from "../utils/http.util.js";
 
-/** A member of a direct room (only the fields we need to resolve a counterparty). */
+/** A member of a direct room (only the field we need to tell the two members apart). */
 export type OmadeusDirectMember = {
   referenceId: number;
 };
 
 /**
  * A Jaguar direct room. The room `id` is the same value that arrives as
- * `roomId` on inbound messages, so it keys the counterparty cache.
+ * `roomId` on inbound messages, which is what makes it usable as the single
+ * admission key for this channel.
  */
 export type OmadeusDirect = {
   id: number;
-  subscribableKind?: string;
   members: OmadeusDirectMember[];
 };
 
@@ -19,63 +19,35 @@ function readMembers(value: unknown): OmadeusDirectMember[] {
   if (!Array.isArray(value)) return [];
   const members: OmadeusDirectMember[] = [];
   for (const entry of value) {
-    if (entry && typeof entry === "object") {
-      const ref = (entry as Record<string, unknown>).referenceId;
-      if (typeof ref === "number" && Number.isFinite(ref)) {
-        members.push({ referenceId: ref });
-      }
+    if (!entry || typeof entry !== "object") continue;
+    const ref = (entry as Record<string, unknown>).referenceId;
+    if (typeof ref === "number" && Number.isFinite(ref)) {
+      members.push({ referenceId: ref });
     }
   }
   return members;
 }
 
-function parseDirects(payload: unknown): OmadeusDirect[] {
-  if (!Array.isArray(payload)) return [];
-  const directs: OmadeusDirect[] = [];
-  for (const entry of payload) {
-    if (!entry || typeof entry !== "object") continue;
-    const row = entry as Record<string, unknown>;
-    if (typeof row.id !== "number") continue;
-    directs.push({
-      id: row.id,
-      subscribableKind: typeof row.subscribableKind === "string" ? row.subscribableKind : undefined,
-      members: readMembers(row.members),
-    });
-  }
-  return directs;
-}
-
 /**
- * List Jaguar direct rooms with their members. Mirrors the frontend `directs` LIST call:
- * `filters` are encoded as `key=IN(v1,v2,…)` query params. Pass `{ id: [roomId] }` to fetch a
- * single direct by its room id.
+ * Fetch the caller's DM with the OpenClaw bot.
+ *
+ * `openclaw_bot` is a server-side alias: Jaguar resolves the room from the
+ * authenticated member, so we never have to know or guess a room id. This is
+ * the only room this channel serves, and one call at startup pins it.
  */
-export async function listDirects(
-  opts: OmadeusApiOptions,
-  params: {
-    filters?: Record<string, (string | number)[]>;
-    skip?: number;
-    take?: number;
-    signal?: AbortSignal;
-  } = {},
-): Promise<OmadeusDirect[]> {
-  const { filters, skip = 0, take = 100, signal } = params;
-  const search = new URLSearchParams();
-  if (take) search.set("take", String(take));
-  if (skip) search.set("skip", String(skip));
-  if (filters) {
-    for (const [key, values] of Object.entries(filters)) {
-      search.set(key, `IN(${values.join(",")})`);
-    }
-  }
-  const qs = search.toString();
-  const res = await jaguarFetch(opts, `/directs${qs ? `?${qs}` : ""}`, {
-    method: "LIST",
-    signal,
-  });
+export async function getOpenClawDirect(opts: OmadeusApiOptions): Promise<OmadeusDirect> {
+  const res = await jaguarFetch(opts, "/directs/openclaw_bot", { method: "GET" });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Omadeus list directs failed (${res.status}): ${text.slice(0, 200)}`);
+    throw new OmadeusHttpError(
+      `Omadeus get OpenClaw direct failed (${res.status}): ${text.slice(0, 200)}`,
+      res.status,
+    );
   }
-  return parseDirects(await res.json());
+  const body = (await res.json()) as Record<string, unknown>;
+  const id = body.id;
+  if (typeof id !== "number" || !Number.isFinite(id)) {
+    throw new Error("Omadeus OpenClaw direct response is missing a numeric room id");
+  }
+  return { id, members: readMembers(body.members) };
 }

@@ -1,21 +1,21 @@
 import { WebSocket } from "ws";
+import { isOmadeusMessage } from "../inbound.js";
 import type { OmadeusTokenManager } from "../token.js";
+import type { OmadeusMessage } from "../types.js";
 
-export type OmadeusSocketOptions = {
+export type JaguarSocketOptions = {
   omadeusUrl: string;
   tokenManager: OmadeusTokenManager;
-  /** Path suffix for the websocket endpoint (e.g. "ws" or "dolphin-ws"). */
-  pathSuffix: string;
-  /** Log prefix, e.g. "[jaguar]" or "[dolphin]". */
-  logPrefix: string;
-  onEvent?: (data: Record<string, unknown>) => void;
+  onMessage?: (msg: OmadeusMessage) => void;
+  /** Called for any non-message events (typing, presence, seen receipts, …). */
+  onOtherEvent?: (data: Record<string, unknown>) => void;
   onConnect?: () => void;
   onDisconnect?: (reason: string) => void;
   onError?: (error: Error) => void;
   log?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void };
 };
 
-export type OmadeusSocketClient = {
+export type JaguarSocket = {
   connect(): void;
   disconnect(): void;
   isConnected(): boolean;
@@ -23,6 +23,8 @@ export type OmadeusSocketClient = {
   send(data: unknown): void;
 };
 
+const WS_PATH = "ws";
+const LOG_PREFIX = "[jaguar]";
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
 // Heartbeat tuning knobs for Omadeus sockets.
@@ -39,18 +41,10 @@ function isClientKeepAlive(data: Record<string, unknown>): boolean {
   return (data as { data?: unknown }).data === KEEP_ALIVE_CONTENT;
 }
 
-export function createOmadeusSocketClient(opts: OmadeusSocketOptions): OmadeusSocketClient {
-  const {
-    omadeusUrl,
-    tokenManager,
-    pathSuffix,
-    logPrefix,
-    onEvent,
-    onConnect,
-    onDisconnect,
-    onError,
-    log,
-  } = opts;
+export function createJaguarSocket(opts: JaguarSocketOptions): JaguarSocket {
+  const { omadeusUrl, tokenManager, onMessage, onOtherEvent, onConnect, onDisconnect, onError, log } =
+    opts;
+  const logPrefix = LOG_PREFIX;
 
   let ws: WebSocket | null = null;
   let reconnectAttempt = 0;
@@ -62,7 +56,7 @@ export function createOmadeusSocketClient(opts: OmadeusSocketOptions): OmadeusSo
   function buildWsUrl(): string {
     const base = omadeusUrl.replace(/^http/, "ws");
     const token = tokenManager.wsToken();
-    return `${base}/${pathSuffix}?token=${encodeURIComponent(token)}`;
+    return `${base}/${WS_PATH}?token=${encodeURIComponent(token)}`;
   }
 
   function scheduleReconnect() {
@@ -170,7 +164,11 @@ export function createOmadeusSocketClient(opts: OmadeusSocketOptions): OmadeusSo
         }
 
         resetHeartbeat();
-        onEvent?.(data);
+        if (isOmadeusMessage(data)) {
+          onMessage?.(data);
+        } else {
+          onOtherEvent?.(data);
+        }
       } catch {
         log?.warn(`${logPrefix} unparseable message: ${String(raw).slice(0, 200)}`);
       }

@@ -2,20 +2,6 @@
 // Omadeus config shape (stored under channels.omadeus in OpenClaw config)
 // ---------------------------------------------------------------------------
 
-export type OmadeusInboundMentionPolicy = "never" | "always" | "outsideAllowlist";
-
-export type OmadeusInboundDirectPolicy = {
-  enabled: boolean;
-  requireMention?: "never" | "always";
-};
-
-
-/** Jaguar chat ingress policy. Only the OpenClaw direct room is served. */
-export type OmadeusInboundPolicy = {
-  version?: number;
-  direct?: OmadeusInboundDirectPolicy;
-};
-
 export type OmadeusChannelConfig = {
   enabled?: boolean;
   /** Omadeus CAS authentication base URL. Defaults to production. */
@@ -23,30 +9,27 @@ export type OmadeusChannelConfig = {
   /** Main Omadeus gateway base URL for Dolphin and Jaguar traffic. Defaults to production. */
   omadeusUrl?: string;
   /**
-   * Omadeus API key (sent as `Authorization: ApiToken <key>`). When set, the
-   * plugin authenticates with it directly — no CAS login, no session token
-   * refresh — and `email`/`password` are not needed.
+   * Omadeus API key, sent as `Authorization: ApiToken <key>`. Set by the hosted
+   * provisioner. When present it is the whole credential — no CAS login, no
+   * refresh — and `email`/`password`/`organizationId` are ignored.
    */
   apiKey?: string;
   email?: string;
   password?: string;
   organizationId?: number;
-  /** Cached Omadeus session JWT obtained during onboarding/startup. */
-  sessionToken?: string;
   /**
-   * ID of the OpenClaw Omadeus member, resolved during setup.
+   * Reference id of the OpenClaw Omadeus member.
    *
-   * OpenClaw is a distinct Omadeus user, but the gateway authenticates as the operator
-   * and posts as OpenClaw via `asOpenclaw`. The two identities are therefore only
-   * distinguishable by this id, which is what lets the inbound policy tell the operator's
-   * own OpenClaw DM apart from a DM with a real person.
+   * Load-bearing twice over: it identifies which member of the served DM is the
+   * bot, and every message authored by that member is one of our own replies
+   * echoing back. Without it the channel cannot tell its own voice from the
+   * operator's.
    */
   openClawMemberId?: number;
-  /** @deprecated Legacy name for `openClawMemberId`; read-only fallback for old configs. */
-  openClawReferenceId?: number;
-  /** Jaguar chat ingress allowlists and mention rules. */
-  inbound?: OmadeusInboundPolicy;
 };
+
+/** The two ways to authenticate, plus "not configured at all". */
+export type OmadeusCredentialSource = "apikey" | "password" | "none";
 
 export type ResolvedOmadeusAccount = {
   accountId: string;
@@ -58,11 +41,9 @@ export type ResolvedOmadeusAccount = {
   email: string;
   password: string;
   organizationId: number;
-  sessionToken?: string;
-  /** Omadeus API key; when set it replaces the CAS email/password flow. */
   apiKey?: string;
-  /** "none" if no api key, config/env credentials or cached session token exist */
-  credentialSource: "apikey" | "config" | "env" | "session" | "none";
+  openClawMemberId?: number;
+  credentialSource: OmadeusCredentialSource;
 };
 
 // ---------------------------------------------------------------------------
@@ -96,21 +77,10 @@ export type OmadeusOrganization = {
  *
  * The plugin reports `connecting` when setup completes and `connected` when its
  * websocket opens. `disconnected` is not written by the plugin: the failure
- * modes that matter (crash, OOM-kill, deleted deployment, uninstalled plugin)
- * cannot report anything, so it is left to a server-side liveness check.
+ * modes that matter (crash, OOM-kill, deleted deployment) cannot report
+ * anything, so it is left to a server-side liveness check.
  */
 export type OmadeusOpenClawStatus = "disconnected" | "connecting" | "connected";
-
-export type OmadeusOrganizationMember = {
-  referenceId: number;
-  id: number;
-  firstName?: string;
-  lastName?: string;
-  title?: string;
-  email?: string;
-  isSystem?: boolean;
-};
-
 
 // ---------------------------------------------------------------------------
 // JWT decoded payload (only fields we need)
@@ -119,99 +89,30 @@ export type OmadeusOrganizationMember = {
 export type OmadeusJwtPayload = {
   id: number;
   email: string;
-  firstName?: string;
-  lastName?: string;
-  title?: string;
   referenceId: number;
   sessionId: string;
   organizationId: number;
-  roles: string[];
   exp: number;
 };
 
 // ---------------------------------------------------------------------------
-// Jaguar socket message (chat — DMs, nugget rooms, task rooms, etc.)
+// Jaguar socket message
 // ---------------------------------------------------------------------------
 
 /**
- * Omadeus subscribable **type** on Jaguar chat payloads (room context).
- *
- * - **direct** — DM from a user.
- * - **channel** — message in a channel room.
- * - **nugget** … **folder** — entity-associated chat (tasks, work items, hierarchy).
+ * A Jaguar chat message frame. Jaguar sends more fields than these (reactions,
+ * attachments, threads); only the ones this channel reads are declared, so the
+ * type states what we actually depend on.
  */
-export type OmadeusSubscribableType =
-  | "direct"
-  | "channel"
-  | "nugget"
-  | "project"
-  | "sprint"
-  | "release"
-  | "summary"
-  | "client"
-  | "folder"
-  | (string & {});
-
-/**
- * Omadeus subscribable **kind** on Jaguar chat payloads (same coarse buckets as `OmadeusSubscribableType`;
- * routing uses `subscribableKind` in the plugin).
- *
- * - **direct** — DM from a user.
- * - **channel** — message in a channel room.
- * - **task**, **nugget**, **project**, **release**, **sprint**, **summary**, **client**, **folder** — entity chat.
- */
-export type OmadeusSubscribableKind =
-  | "task"
-  | "direct"
-  | "channel"
-  | "nugget"
-  | "project"
-  | "sprint"
-  | "release"
-  | "summary"
-  | "client"
-  | "folder"
-  | (string & {});
-
 export type OmadeusMessage = {
   id: number;
-  temporaryId?: string;
   type: "message";
   roomId: number;
-  senderId: number;
   senderReferenceId: number;
-  organizationId: number;
   body: string;
-  roomName: string | null;
-  subscribableType: OmadeusSubscribableType;
-  subscribableKind: OmadeusSubscribableKind;
   createdAtTimestamp: number;
-  mimetype: string;
-  filename: string | null;
-  fileLength: number | null;
-  duration: number | null;
-  details: string | null;
-  replyRootId: number | null;
-  attachmentUrl: string | null;
-  speechFileUrl: string | null;
-  reactions: Record<string, unknown>;
-  threadRoomId: number | null;
-  replyTo: unknown | null;
-  createdAt: string;
   removedAt: string | null;
-  metadata: unknown | null;
-  isMute: boolean;
-  isSeen: boolean;
 };
-
-/** Parsed details.rawMessage field for @mention detection. */
-export type OmadeusMessageDetails = {
-  rawMessage?: string;
-};
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Inbound message (normalized for OpenClaw)
@@ -224,9 +125,5 @@ export type OmadeusInboundMessage = {
   fromReferenceId: number;
   content: string;
   roomId: number;
-  roomName: string | null;
-  subscribableType: OmadeusSubscribableType;
-  subscribableKind: OmadeusSubscribableKind;
-  isMention: boolean;
   timestamp: number;
 };

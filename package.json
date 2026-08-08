@@ -1,6 +1,6 @@
 {
   "name": "@brantrusnak/openclaw-omadeus",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": false,
   "description": "OpenClaw Omadeus project management channel plugin",
   "homepage": "https://github.com/brantrusnak/openclaw-omadeus-plugin#readme",
@@ -28,7 +28,6 @@
     "dist",
     "index.ts",
     "setup-entry.ts",
-    "api.ts",
     "runtime-api.ts",
     "openclaw.plugin.json",
     "src",

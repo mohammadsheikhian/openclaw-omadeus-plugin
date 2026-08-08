@@ -2,7 +2,6 @@ import { getCasSession, setCasSession } from "../store.js";
 import type {
   CasAuthorizationCodeResponse,
   OmadeusOpenClawStatus,
-  OmadeusOrganizationMember,
   OmadeusOrganization,
   OmadeusSessionTokenResponse,
 } from "../types.js";
@@ -135,57 +134,6 @@ export async function listOrganizations(params: {
     throw new Error(`Omadeus list organizations failed (${res.status}): ${text}`);
   }
   return (await res.json()) as OmadeusOrganization[];
-}
-
-/**
- * Verify an Omadeus API key and resolve the identity it is bound to.
- * Dolphin authenticates the request with the key itself.
- */
-export async function verifyApiKey(params: {
-  omadeusUrl: string;
-  apiKey: string;
-}): Promise<{ memberId: number; organizationId: number }> {
-  const { omadeusUrl, apiKey } = params;
-  const url = `${omadeusUrl}/dolphin/apiv1/apikeys`;
-  const res = await omadeusFetch("Omadeus verify API key", url, {
-    method: "GET",
-    headers: { Authorization: `ApiToken ${apiKey}` },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Omadeus API key verification failed (${res.status}): ${text}`);
-  }
-  const body = (await res.json()) as { memberId?: number; organizationId?: number };
-  if (typeof body.memberId !== "number" || typeof body.organizationId !== "number") {
-    throw new Error("Omadeus API key verification response missing memberId/organizationId");
-  }
-  return { memberId: body.memberId, organizationId: body.organizationId };
-}
-
-export async function listOrganizationMembers(params: {
-  omadeusUrl: string;
-  /** Full Authorization header value (`Bearer <jwt>` or `ApiToken <key>`). */
-  authorization: string;
-  organizationId: number;
-  email?: string;
-}): Promise<OmadeusOrganizationMember[]> {
-  const { omadeusUrl, authorization, organizationId, email } = params;
-  const search = new URLSearchParams();
-  if (email) search.set("email", email);
-  const qs = search.toString();
-  const url = `${omadeusUrl}/dolphin/apiv1/organizations/${organizationId}/members${qs ? `?${qs}` : ""}`;
-  const res = await omadeusFetch("Omadeus list organization members", url, {
-    method: "LIST",
-    headers: {
-      Authorization: authorization,
-      "Accept": "application/json, text/plain, */*",
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Omadeus list organization members failed (${res.status}): ${text}`);
-  }
-  return (await res.json()) as OmadeusOrganizationMember[];
 }
 
 /**

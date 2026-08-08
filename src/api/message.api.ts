@@ -17,16 +17,23 @@ async function readJsonOrEmpty(res: Response): Promise<unknown> {
   }
 }
 
+/**
+ * Post a message to a room as the OpenClaw bot.
+ *
+ * `asOpenclaw` is not optional. It is what makes the reply appear as OpenClaw
+ * rather than the operator whose account the gateway holds — and inbound echo
+ * suppression depends on it, since it recognises our own messages by author.
+ */
 export async function sendRoomMessage(
   opts: OmadeusApiOptions,
-  params: { roomId: number | string; body: string; temporaryId?: string },
+  params: { roomId: number | string; body: string },
 ): Promise<{ ok: boolean; message?: OmadeusMessage; error?: string }> {
   try {
     const res = await jaguarFetch(opts, `/rooms/${params.roomId}/messages`, {
       method: "SEND",
       body: JSON.stringify({
         body: params.body,
-        temporaryId: params.temporaryId ?? generateTemporaryId(),
+        temporaryId: generateTemporaryId(),
         links: "[]",
         asOpenclaw: true,
       }),

@@ -6,6 +6,21 @@ export type OmadeusApiOptions = {
   tokenManager: OmadeusTokenManager;
 };
 
+/**
+ * An HTTP error that carries its status, so callers can tell a transient
+ * failure (5xx, which is worth retrying) from a permanent one (401/404, which
+ * means the deployment is wrong and should fail loudly).
+ */
+export class OmadeusHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "OmadeusHttpError";
+  }
+}
+
 export function authHeaders(authorization: string): Record<string, string> {
   return {
     Authorization: authorization,

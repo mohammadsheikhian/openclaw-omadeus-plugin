@@ -30,49 +30,8 @@
       "organizationId": {
         "type": "number"
       },
-      "sessionToken": {
-        "type": "string"
-      },
-      "openClawReferenceId": {
-        "type": "number"
-      },
       "openClawMemberId": {
         "type": "number"
-      },
-      "inbound": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "version": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "direct": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "allowedSenderReferenceIds": {
-                "type": "array",
-                "items": {
-                  "type": "number"
-                }
-              },
-              "requireMention": {
-                "type": "string",
-                "enum": [
-                  "never",
-                  "always"
-                ]
-              }
-            },
-            "required": [
-              "enabled"
-            ]
-          }
-        }
       }
     }
   },
@@ -105,49 +64,8 @@
           "organizationId": {
             "type": "number"
           },
-          "sessionToken": {
-            "type": "string"
-          },
-          "openClawReferenceId": {
-            "type": "number"
-          },
           "openClawMemberId": {
             "type": "number"
-          },
-          "inbound": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "version": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "direct": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "allowedSenderReferenceIds": {
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    }
-                  },
-                  "requireMention": {
-                    "type": "string",
-                    "enum": [
-                      "never",
-                      "always"
-                    ]
-                  }
-                },
-                "required": [
-                  "enabled"
-                ]
-              }
-            }
           }
         }
       },
@@ -174,21 +92,8 @@
         "organizationId": {
           "label": "Organization ID"
         },
-        "sessionToken": {
-          "label": "Session token",
-          "sensitive": true,
-          "advanced": true
-        },
-        "openClawReferenceId": {
-          "label": "Legacy OpenClaw member reference ID",
-          "advanced": true
-        },
         "openClawMemberId": {
           "label": "OpenClaw member ID",
-          "advanced": true
-        },
-        "inbound": {
-          "label": "Inbound policy (Jaguar chat)",
           "advanced": true
         }
       },

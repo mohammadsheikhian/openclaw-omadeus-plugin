@@ -1,65 +1,91 @@
 import { describe, expect, it } from "vitest";
-import { parseJaguarMessage } from "./inbound.js";
+import { admitOmadeusMessage, isOmadeusMessage, parseJaguarMessage } from "./inbound.js";
 import type { OmadeusMessage } from "./types.js";
 
-const selfRef = 100;
+const ROOM = 777;
+const OPERATOR = 8;
+const OPENCLAW = 99;
 
-function baseMessage(overrides: Partial<OmadeusMessage> = {}): OmadeusMessage {
+function message(overrides: Partial<OmadeusMessage> = {}): OmadeusMessage {
   return {
-    type: "message",
     id: 1,
+    type: "message",
+    roomId: ROOM,
+    senderReferenceId: OPERATOR,
     body: "hello",
-    senderReferenceId: 200,
-    roomId: 10,
-    roomName: "room",
-    subscribableType: "direct",
-    subscribableKind: "direct",
-    details: null,
-    removedAt: null,
     createdAtTimestamp: 1_700_000_000,
+    removedAt: null,
     ...overrides,
-  } as OmadeusMessage;
+  };
 }
 
+function inbound(overrides: Partial<OmadeusMessage> = {}) {
+  const parsed = parseJaguarMessage(message(overrides));
+  if (!parsed) throw new Error("expected the message to parse");
+  return parsed;
+}
+
+describe("isOmadeusMessage", () => {
+  it("accepts chat frames and rejects everything else", () => {
+    expect(isOmadeusMessage(message())).toBe(true);
+    expect(isOmadeusMessage({ type: "seen", roomId: ROOM })).toBe(false);
+    expect(isOmadeusMessage(null)).toBe(false);
+  });
+});
+
 describe("parseJaguarMessage", () => {
-  it("parses a normal message", () => {
-    const parsed = parseJaguarMessage(baseMessage(), { selfReferenceId: selfRef });
-    expect(parsed?.content).toBe("hello");
-    expect(parsed?.isMention).toBe(false);
+  it("strips a leading bold mention so the agent sees clean text", () => {
+    expect(inbound({ body: "**@OpenClaw Bot** what is up?" }).content).toBe("what is up?");
   });
 
-  it("strips a leading bold mention and flags it", () => {
-    const parsed = parseJaguarMessage(baseMessage({ body: "**@OpenClaw** what is up" }), {
-      selfReferenceId: selfRef,
-    });
-    expect(parsed?.content).toBe("what is up");
-    expect(parsed?.isMention).toBe(true);
+  it("keeps a bare mention as empty content rather than dropping the message", () => {
+    // The caller answers "text only" instead of going silent, which it can only
+    // do if the message survives parsing.
+    expect(inbound({ body: "**@OpenClaw Bot**" }).content).toBe("");
   });
 
   it("drops removed messages", () => {
-    const parsed = parseJaguarMessage(baseMessage({ removedAt: "2026-01-01T00:00:00Z" }), {
-      selfReferenceId: selfRef,
-    });
-    expect(parsed).toBeNull();
+    expect(parseJaguarMessage(message({ removedAt: "2026-08-08T00:00:00Z" }))).toBeNull();
+  });
+});
+
+describe("admitOmadeusMessage", () => {
+  it("admits the operator's message in the served room", () => {
+    expect(
+      admitOmadeusMessage({ inbound: inbound(), roomId: ROOM, openClawMemberId: OPENCLAW }),
+    ).toBeNull();
   });
 
-  // Text-less messages must survive parsing so the caller can run them through the inbound
-  // policy and answer only in the room this channel serves. Dropping them here would either
-  // lose them silently or force a reply in rooms we must stay out of.
-  it("keeps an attachment-only message with empty content", () => {
-    const parsed = parseJaguarMessage(baseMessage({ body: "" }), {
-      selfReferenceId: selfRef,
-    });
-    expect(parsed).not.toBeNull();
-    expect(parsed?.content).toBe("");
+  it("drops other rooms", () => {
+    expect(
+      admitOmadeusMessage({
+        inbound: inbound({ roomId: 999 }),
+        roomId: ROOM,
+        openClawMemberId: OPENCLAW,
+      }),
+    ).toBe("other_room");
   });
 
-  it("keeps a bare mention with empty content", () => {
-    const parsed = parseJaguarMessage(baseMessage({ body: "**@OpenClaw**" }), {
-      selfReferenceId: selfRef,
-    });
-    expect(parsed).not.toBeNull();
-    expect(parsed?.content).toBe("");
-    expect(parsed?.isMention).toBe(true);
+  it("drops our own replies echoing back", () => {
+    expect(
+      admitOmadeusMessage({
+        inbound: inbound({ senderReferenceId: OPENCLAW }),
+        roomId: ROOM,
+        openClawMemberId: OPENCLAW,
+      }),
+    ).toBe("openclaw_authored");
+  });
+
+  it("admits the operator repeating what OpenClaw just said", () => {
+    // Regression guard: echo suppression must key off the author, never the
+    // body. Matching on text would swallow the operator's own "ok" whenever it
+    // followed an identical reply.
+    expect(
+      admitOmadeusMessage({
+        inbound: inbound({ id: 2, body: "ok" }),
+        roomId: ROOM,
+        openClawMemberId: OPENCLAW,
+      }),
+    ).toBeNull();
   });
 });

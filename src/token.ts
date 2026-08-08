@@ -1,6 +1,6 @@
 import { authenticate } from "./auth.js";
 import type { OmadeusJwtPayload } from "./types.js";
-import { decodeJwtPayload, tokenExpiresInMs } from "./utils/jwt.util.js";
+import { tokenExpiresInMs } from "./utils/jwt.util.js";
 
 // Re-authenticate 5 minutes before expiry
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -29,17 +29,11 @@ export type OmadeusTokenManager = {
   wsToken(): string;
 };
 
-/**
- * Token manager backed by a static Omadeus API key: nothing to refresh,
- * nothing to decode. `getPayload` is unavailable — identity is resolved via
- * the API-key verification endpoint instead of a JWT payload.
- */
-export function createApiKeyTokenManager(apiKey: string): OmadeusTokenManager {
-  const header = `ApiToken ${apiKey}`;
+function createStaticTokenManager(token: string, header: string): OmadeusTokenManager {
   return {
-    getToken: () => apiKey,
+    getToken: () => token,
     getPayload: () => {
-      throw new Error("Omadeus: API-key auth carries no JWT payload");
+      throw new Error("Omadeus: this credential carries no JWT payload");
     },
     refresh: async () => {},
     startAutoRefresh: () => {},
@@ -50,32 +44,38 @@ export function createApiKeyTokenManager(apiKey: string): OmadeusTokenManager {
   };
 }
 
+/**
+ * Token manager backed by a static Omadeus API key: nothing to refresh,
+ * nothing to decode. The websocket gets the full `ApiToken <key>` form because
+ * Jaguar needs the scheme to recognise it.
+ */
+export function createApiKeyTokenManager(apiKey: string): OmadeusTokenManager {
+  return createStaticTokenManager(apiKey, `ApiToken ${apiKey}`);
+}
+
+/**
+ * Token manager backed by a session JWT that someone else obtained — the setup
+ * wizard, which already has one and only needs a couple of one-off calls.
+ */
+export function createBearerTokenManager(token: string): OmadeusTokenManager {
+  return createStaticTokenManager(token, `Bearer ${token}`);
+}
+
 export function createTokenManager(params: {
   casUrl: string;
   omadeusUrl: string;
   email: string;
   password: string;
   organizationId: number;
-  initialToken?: string;
-  onRefresh?: (token: string) => void;
   onError?: (error: Error) => void;
 }): OmadeusTokenManager {
-  const { casUrl, omadeusUrl, email, password, organizationId, initialToken, onRefresh, onError } =
-    params;
+  const { casUrl, omadeusUrl, email, password, organizationId, onError } = params;
 
+  // Tokens live only for the life of the process. A cached one written back to
+  // config saves a single login per restart and is usually expired anyway, so
+  // the gateway always starts from a fresh CAS login.
   let currentToken = "";
   let currentPayload: OmadeusJwtPayload | null = null;
-  if (initialToken) {
-    try {
-      const payload = decodeJwtPayload(initialToken);
-      currentToken = initialToken;
-      currentPayload = payload;
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      onError?.(error);
-      // Ignore malformed seed token and fall back to authenticate().
-    }
-  }
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   const refresh = async () => {
@@ -91,7 +91,6 @@ export function createTokenManager(params: {
     });
     currentToken = dolphinToken;
     currentPayload = payload;
-    onRefresh?.(dolphinToken);
   };
 
   const scheduleNextRefresh = () => {
