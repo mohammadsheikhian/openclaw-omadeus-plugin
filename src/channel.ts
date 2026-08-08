@@ -62,6 +62,16 @@ function actionOk(payload: Record<string, unknown>) {
   };
 }
 
+/** Trim, drop empties, dedupe — mirrors the SDK's own string normalization. */
+export function normalizeAllowFromEntries(allowFrom: readonly (string | number)[]): string[] {
+  const seen: string[] = [];
+  for (const entry of allowFrom) {
+    const trimmed = String(entry ?? "").trim();
+    if (trimmed && !seen.includes(trimmed)) seen.push(trimmed);
+  }
+  return seen;
+}
+
 function readStringParam(params: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = params[key];
@@ -100,8 +110,18 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
     "casUrl",
     "omadeusUrl",
   ],
+  // This channel has no sender allowlist — the room is the allowlist — so
+  // there is nothing to resolve.
   resolveAllowFrom: () => [],
-  formatAllowFrom: () => [],
+  // Must pass values through. The SDK runs BOTH `commands.ownerAllowFrom` and
+  // the inbound sender id through this one function
+  // (`formatAllowFromList` / `normalizeAllowFromEntry`), then matches the two
+  // lists against each other. A stub returning `[]` blanks both sides, so no
+  // sender can ever match an owner, `senderIsOwner` stays false, and every
+  // owner-only tool — `cron` among them — is silently stripped from the agent.
+  // Omadeus senders are plain member reference ids, so trimming is all the
+  // normalization they need.
+  formatAllowFrom: (allowFrom) => normalizeAllowFromEntries(allowFrom),
 });
 
 const defaultRuntimeState = {

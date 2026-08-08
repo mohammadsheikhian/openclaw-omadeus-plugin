@@ -217,9 +217,22 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
       "Omadeus",
     );
 
+    // Declare the operator as the command owner. Without an entry here
+    // `senderIsOwner` is false for every turn, and OpenClaw strips its
+    // owner-only tools — `cron` among them — so reminders silently never work.
+    // Hosted instances get this from the provisioner; the wizard is the only
+    // place the self-hosted path learns the operator's id.
+    const commands = (cfg.commands ?? {}) as Record<string, unknown>;
+    const ownerAllowFrom = Array.isArray(commands.ownerAllowFrom)
+      ? (commands.ownerAllowFrom as unknown[]).map(String)
+      : [];
+    const selfId = String(selfReferenceId);
+    if (!ownerAllowFrom.includes(selfId)) ownerAllowFrom.push(selfId);
+
     return {
       cfg: {
         ...cfg,
+        commands: { ...commands, ownerAllowFrom },
         channels: {
           ...cfg.channels,
           omadeus: {

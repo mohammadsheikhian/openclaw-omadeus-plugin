@@ -146,6 +146,22 @@ The OpenClaw DM always exists by the time an instance is provisioned. `pinOpenCl
 immediately: those mean the gateway is pointed at the wrong Omadeus or holds the wrong
 credentials, and no amount of retrying fixes it.
 
+### `formatAllowFrom` must pass values through
+
+OpenClaw runs **both** `commands.ownerAllowFrom` and the inbound sender id through
+`config.formatAllowFrom`, then matches the two results against each other to decide
+`senderIsOwner`. A stub returning `[]` blanks both sides, the match can never succeed, and the
+agent loses every owner-only tool — `cron` first among them — with only a
+`gateway sender owner-only tools.deny` line in the log. That is exactly what happened; there
+are regression tests in `src/owner-policy.test.ts`.
+
+The channel still has no sender allowlist (`resolveAllowFrom` returns `[]`) — the room is the
+allowlist. That part is fine; it is only the *formatting* hook that must be honest.
+
+The owner id itself comes from `commands.ownerAllowFrom`: written by the provisioner for
+hosted instances, and by the setup wizard for self-hosted ones. Without an entry there,
+`senderIsOwner` is false for every turn.
+
 ### Admission failures must stay visible
 
 Drops and text-less messages log at `info`, not `debug`. Every silent failure this channel has
