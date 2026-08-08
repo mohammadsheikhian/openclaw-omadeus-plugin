@@ -122,8 +122,10 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
     id: CHANNEL_ID,
     label: "Omadeus",
     selectionLabel: "Omadeus (API + WebSocket)",
-    docsPath: "",
-    docsLabel: "",
+    // Empty values make the gateway log "registered incomplete metadata" on
+    // every boot and fill them in itself.
+    docsPath: "https://github.com/brantrusnak/openclaw-omadeus-plugin#readme",
+    docsLabel: "Omadeus plugin docs",
     blurb:
       "AI-native project management that knows your role, speaks your language, and keeps your team in sync. No noise.",
   },
@@ -381,6 +383,13 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         onMessage: (msg) => {
           const inbound = parseJaguarMessage(msg, log);
           if (!inbound) return;
+          // Logged before admission so every arrival is accounted for. Without
+          // this a dropped message is the only trace, and a message that never
+          // arrives looks identical to one that was silently discarded.
+          log.info(
+            `[jaguar] message ${inbound.messageId} room=${inbound.roomId} ` +
+              `from=${inbound.fromReferenceId}: ${inbound.content.slice(0, 80)}`,
+          );
           ctx.setStatus({ accountId: account.accountId, lastInboundAt: Date.now() });
           handleMessage(inbound).catch((err) => {
             log.error(

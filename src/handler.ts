@@ -7,11 +7,17 @@ import { getOmadeusRuntime } from "./runtime.js";
 import type { OmadeusInboundMessage } from "./types.js";
 import type { OmadeusApiOptions } from "./utils/http.util.js";
 
+/**
+ * Message-only on purpose. The gateway logger accepts a structured second
+ * argument and then prints only the message, so anything put there is lost —
+ * which is how a drop reason ends up invisible. Narrowing the type here makes
+ * that mistake impossible rather than merely discouraged.
+ */
 type Log = {
-  info: (msg: string, extra?: Record<string, unknown>) => void;
-  warn: (msg: string, extra?: Record<string, unknown>) => void;
-  error: (msg: string, extra?: Record<string, unknown>) => void;
-  debug?: (msg: string, extra?: Record<string, unknown>) => void;
+  info: (msg: string) => void;
+  warn: (msg: string) => void;
+  error: (msg: string) => void;
+  debug?: (msg: string) => void;
 };
 
 const TEXT_ONLY_REPLY =
@@ -69,7 +75,7 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     // rather than going silent; safe because we only reach it in the one room
     // the channel serves.
     if (!rawBody.trim()) {
-      log.info("[omadeus] message has no usable text", { roomId });
+      log.info(`[omadeus] message ${inbound.messageId} has no usable text; answering text-only`);
       markSeen(ackMessageIds);
       try {
         await sendOmadeusMessage(apiOpts, { roomId, text: TEXT_ONLY_REPLY });
@@ -110,7 +116,7 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       roomId,
     });
 
-    log.info("[omadeus] dispatching to agent", { sessionKey: route.sessionKey });
+    log.info(`[omadeus] dispatching message ${inbound.messageId} to agent (session=${route.sessionKey})`);
     try {
       await core.channel.inbound.run({
         channel: "omadeus",
@@ -182,14 +188,14 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
         },
         log: (event) => {
           if (event.event === "error") {
-            log.error("[omadeus] turn error", { stage: event.stage, error: String(event.error) });
+            log.error(`[omadeus] turn error at ${event.stage}: ${String(event.error)}`);
             return;
           }
           log.debug?.(`[omadeus] turn ${event.stage}:${event.event}`);
         },
       });
     } catch (err) {
-      log.error("[omadeus] dispatch failed", { error: String(err) });
+      log.error(`[omadeus] dispatch failed: ${String(err)}`);
       runtime.error?.(`omadeus dispatch failed: ${String(err)}`);
     }
   };
@@ -227,11 +233,13 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     // channel has had was invisible at the default log level.
     const drop = admitOmadeusMessage({ inbound, roomId, openClawMemberId });
     if (drop) {
-      log.info("[omadeus] dropped message", {
-        reason: drop,
-        roomId: inbound.roomId,
-        fromReferenceId: inbound.fromReferenceId,
-      });
+      // Interpolated, not passed as a second argument: the gateway logger
+      // prints the message and discards structured extras, so a drop reason
+      // put there is invisible in exactly the situation it exists for.
+      log.info(
+        `[omadeus] dropped message ${inbound.messageId}: ${drop} ` +
+          `(room=${inbound.roomId} from=${inbound.fromReferenceId})`,
+      );
       return;
     }
 
