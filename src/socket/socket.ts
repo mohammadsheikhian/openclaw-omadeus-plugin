@@ -2,60 +2,70 @@ import { WebSocket } from "ws";
 import { isOmadeusMessage } from "../inbound.js";
 import type { OmadeusTokenManager } from "../token.js";
 import type { OmadeusMessage } from "../types.js";
+import { createHeartbeat } from "./heartbeat.js";
 
 export type JaguarSocketOptions = {
   omadeusUrl: string;
   tokenManager: OmadeusTokenManager;
   onMessage?: (msg: OmadeusMessage) => void;
-  /** Called for any non-message events (typing, presence, seen receipts, …). */
-  onOtherEvent?: (data: Record<string, unknown>) => void;
+  /**
+   * Fired once per connection transition — not once per socket open. A
+   * reconnect that restores an already-live connection does not fire it again,
+   * so a caller can treat this as "we are now reachable" and act accordingly.
+   */
   onConnect?: () => void;
+  /** Fired once per connection transition, and only after an `onConnect`. */
   onDisconnect?: (reason: string) => void;
   onError?: (error: Error) => void;
   log?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void };
 };
 
+/**
+ * The inbound transport.
+ *
+ * Two methods, because there are two things a caller can decide: start, and
+ * stop. Reconnect backoff, keep-alive, token freshness and connection-transition
+ * bookkeeping are all implementation — a caller that had to know about any of
+ * them would end up duplicating it, which is exactly what happened when
+ * `onConnect` fired per socket rather than per transition.
+ */
 export type JaguarSocket = {
   connect(): void;
   disconnect(): void;
-  isConnected(): boolean;
-  /** Send a raw JSON payload over the socket. */
-  send(data: unknown): void;
 };
 
 const WS_PATH = "ws";
 const LOG_PREFIX = "[jaguar]";
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
-// Heartbeat tuning knobs for Omadeus sockets.
-const HEARTBEAT_INTERVAL_MS = 30_000;
-const HEARTBEAT_MISSED_MAX = 5;
-const KEEP_ALIVE_CONTENT = "keep-alive";
-const KEEP_ALIVE_ACTION = "answer";
 
-function isServerKeepAlive(data: Record<string, unknown>): boolean {
-  return (data as { content?: unknown }).content === KEEP_ALIVE_CONTENT;
-}
-
-function isClientKeepAlive(data: Record<string, unknown>): boolean {
-  return (data as { data?: unknown }).data === KEEP_ALIVE_CONTENT;
-}
+const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
 export function createJaguarSocket(opts: JaguarSocketOptions): JaguarSocket {
-  const { omadeusUrl, tokenManager, onMessage, onOtherEvent, onConnect, onDisconnect, onError, log } =
-    opts;
-  const logPrefix = LOG_PREFIX;
+  const { omadeusUrl, tokenManager, onMessage, onConnect, onDisconnect, onError, log } = opts;
 
   let ws: WebSocket | null = null;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let heartbeatMissCount = 0;
   let intentionalClose = false;
+  /** Whether `onConnect` has fired without a matching `onDisconnect`. */
+  let reportedConnected = false;
 
-  function buildWsUrl(): string {
+  const heartbeat = createHeartbeat({
+    send: (payload) => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+    },
+    onStale: () => {
+      log?.warn(`${LOG_PREFIX} connection went quiet; replacing the socket`);
+      ws?.close();
+    },
+  });
+
+  async function buildWsUrl(): Promise<string> {
     const base = omadeusUrl.replace(/^http/, "ws");
-    const token = tokenManager.wsToken();
+    // Reading the token refreshes it first when it is near expiry. The socket
+    // does not orchestrate that itself — it used to, by re-entering `connect`.
+    const token = await tokenManager.wsToken();
     return `${base}/${WS_PATH}?token=${encodeURIComponent(token)}`;
   }
 
@@ -63,131 +73,84 @@ export function createJaguarSocket(opts: JaguarSocketOptions): JaguarSocket {
     if (intentionalClose) return;
     const delayMs = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempt, RECONNECT_MAX_MS);
     reconnectAttempt++;
-    log?.info(`${logPrefix} reconnecting in ${delayMs}ms (attempt ${reconnectAttempt})`);
+    log?.info(`${LOG_PREFIX} reconnecting in ${delayMs}ms (attempt ${reconnectAttempt})`);
     reconnectTimer = setTimeout(() => connect(), delayMs);
   }
 
-  function stopHeartbeat() {
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-  }
-
-  function resetHeartbeat() {
-    heartbeatMissCount = 0;
-  }
-
-  function sendKeepAlive() {
-    if (ws?.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    heartbeatMissCount += 1;
-    sendKeepAliveFrame();
-
-    if (heartbeatMissCount >= HEARTBEAT_MISSED_MAX) {
-      log?.warn(
-        `${logPrefix} heartbeat unanswered ${heartbeatMissCount} times; reconnecting socket`,
-      );
-      ws.close();
-    }
-  }
-
-  function startHeartbeat() {
-    stopHeartbeat();
-    heartbeatTimer = setInterval(() => {
-      sendKeepAlive();
-    }, HEARTBEAT_INTERVAL_MS);
-  }
-
-  function sendKeepAliveFrame() {
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ data: KEEP_ALIVE_CONTENT, action: KEEP_ALIVE_ACTION }));
-    }
-  }
-
-  function connect() {
+  function discardSocket() {
+    heartbeat.stop();
     if (ws) {
       ws.removeAllListeners();
       ws.close();
       ws = null;
     }
-    intentionalClose = false;
-    stopHeartbeat();
-    resetHeartbeat();
+  }
 
-    if (tokenManager.needsRefresh()) {
-      tokenManager
-        .refresh()
-        .then(() => connect())
-        .catch((err) => {
-          onError?.(err instanceof Error ? err : new Error(String(err)));
-          scheduleReconnect();
-        });
+  function reportDisconnected(reason: string) {
+    if (!reportedConnected) return;
+    reportedConnected = false;
+    onDisconnect?.(reason);
+  }
+
+  async function openSocket(): Promise<void> {
+    discardSocket();
+    intentionalClose = false;
+
+    let url: string;
+    try {
+      url = await buildWsUrl();
+    } catch (err) {
+      onError?.(toError(err));
+      scheduleReconnect();
       return;
     }
+    // `disconnect()` can land while the credential is being refreshed.
+    if (intentionalClose) return;
 
-    const url = buildWsUrl();
-    log?.info(`${logPrefix} connecting...`);
+    log?.info(`${LOG_PREFIX} connecting...`);
+    const socket = new WebSocket(url);
+    ws = socket;
 
-    ws = new WebSocket(url);
-
-    ws.on("open", () => {
+    socket.on("open", () => {
       reconnectAttempt = 0;
-      log?.info(`${logPrefix} connected`);
+      log?.info(`${LOG_PREFIX} connected`);
+      heartbeat.start();
+      if (reportedConnected) return;
+      reportedConnected = true;
       onConnect?.();
-      resetHeartbeat();
-      sendKeepAlive();
-      startHeartbeat();
     });
 
-    ws.on("message", (raw) => {
+    socket.on("message", (raw) => {
+      let frame: Record<string, unknown>;
       try {
-        const data = JSON.parse(String(raw)) as Record<string, unknown>;
-
-        const action = (data as { action?: unknown }).action;
-        if (isServerKeepAlive(data) && action === KEEP_ALIVE_ACTION) {
-          resetHeartbeat();
-          return;
-        }
-
-        if (isClientKeepAlive(data) && action === KEEP_ALIVE_ACTION) {
-          resetHeartbeat();
-          return;
-        }
-
-        // If backend sends a heartbeat ping, answer it immediately.
-        if (isServerKeepAlive(data) && action === "heartbeat") {
-          resetHeartbeat();
-          sendKeepAliveFrame();
-          return;
-        }
-
-        resetHeartbeat();
-        if (isOmadeusMessage(data)) {
-          onMessage?.(data);
-        } else {
-          onOtherEvent?.(data);
-        }
+        frame = JSON.parse(String(raw)) as Record<string, unknown>;
       } catch {
-        log?.warn(`${logPrefix} unparseable message: ${String(raw).slice(0, 200)}`);
+        log?.warn(`${LOG_PREFIX} unparseable message: ${String(raw).slice(0, 200)}`);
+        return;
       }
+      if (heartbeat.observe(frame)) return;
+      // Anything that is not a chat message — typing, presence, seen receipts —
+      // has no subscriber, and proving liveness was its whole contribution.
+      if (isOmadeusMessage(frame)) onMessage?.(frame);
     });
 
-    ws.on("close", (code, reason) => {
+    socket.on("close", (code, reason) => {
       const msg = `code=${code} reason=${String(reason)}`;
-      log?.info(`${logPrefix} disconnected: ${msg}`);
-      onDisconnect?.(msg);
-      ws = null;
-      stopHeartbeat();
-      resetHeartbeat();
+      log?.info(`${LOG_PREFIX} disconnected: ${msg}`);
+      heartbeat.stop();
+      if (ws === socket) ws = null;
+      reportDisconnected(msg);
       scheduleReconnect();
     });
 
-    ws.on("error", (err) => {
-      log?.error(`${logPrefix} error: ${err.message}`);
+    socket.on("error", (err) => {
+      log?.error(`${LOG_PREFIX} error: ${err.message}`);
       onError?.(err);
     });
+  }
+
+  function connect() {
+    void openSocket();
   }
 
   function disconnect() {
@@ -196,23 +159,9 @@ export function createJaguarSocket(opts: JaguarSocketOptions): JaguarSocket {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    stopHeartbeat();
-    resetHeartbeat();
-    if (ws) {
-      ws.removeAllListeners();
-      ws.close();
-      ws = null;
-    }
+    discardSocket();
+    reportDisconnected("disconnect requested");
   }
 
-  return {
-    connect,
-    disconnect,
-    isConnected: () => ws?.readyState === WebSocket.OPEN,
-    send: (data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
-      }
-    },
-  };
+  return { connect, disconnect };
 }

@@ -12,17 +12,14 @@ export async function sendOmadeusMessage(
   apiOpts: OmadeusApiOptions,
   params: { roomId: number; text: string },
 ): Promise<{ channel: string; messageId: string; chatId: string }> {
-  const result = await sendRoomMessage(apiOpts, {
+  const message = await sendRoomMessage(apiOpts, {
     roomId: params.roomId,
     body: params.text,
   });
-  if (!result.ok) {
-    throw new Error(`Omadeus send failed: ${result.error}`);
-  }
 
   return {
     channel: "omadeus",
-    messageId: String(result.message?.id ?? ""),
+    messageId: String(message?.id ?? ""),
     chatId: String(params.roomId),
   };
 }

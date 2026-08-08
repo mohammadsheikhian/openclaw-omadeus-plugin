@@ -1,26 +1,13 @@
 import { getOpenClawDirect } from "./api/direct.api.js";
-import { OmadeusHttpError, type OmadeusApiOptions } from "./utils/http.util.js";
+import type { OmadeusLog } from "./types.js";
+import { isTransientFailure, type OmadeusApiOptions } from "./utils/http.util.js";
 
-type Log = {
-  info: (msg: string, extra?: Record<string, unknown>) => void;
-  warn: (msg: string, extra?: Record<string, unknown>) => void;
-};
+type Log = Pick<OmadeusLog, "info" | "warn">;
 
 const DEFAULT_ATTEMPTS = 5;
 const DEFAULT_RETRY_DELAY_MS = 2_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/**
- * Transient means "the server or the network was briefly unavailable". A pod
- * can start before its gateway is reachable, so those are worth retrying.
- * Anything else — 401 (bad credentials), 404 (no such DM) — is a deployment
- * fault that retrying will never fix.
- */
-function isTransient(err: unknown): boolean {
-  if (err instanceof OmadeusHttpError) return err.status >= 500;
-  return err instanceof Error && err.name !== "OmadeusHttpError";
-}
 
 /**
  * Resolve the one room this channel serves: the operator's DM with the OpenClaw
@@ -72,7 +59,11 @@ export async function pinOpenClawRoom(params: {
       return direct.id;
     } catch (err) {
       lastError = err;
-      if (!isTransient(err) || attempt === attempts) break;
+      // Only a request failure the server or network caused is retried. The
+      // member check below raises a plain Error, which is never transient — a
+      // misconfigured `openClawMemberId` used to be retried 5 times over 8
+      // seconds before the operator saw it.
+      if (!isTransientFailure(err) || attempt === attempts) break;
       log.warn(
         `[omadeus] could not resolve the OpenClaw room (attempt ${attempt}/${attempts}): ${
           err instanceof Error ? err.message : String(err)

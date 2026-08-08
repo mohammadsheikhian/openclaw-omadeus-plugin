@@ -32,6 +32,9 @@ Two transports, and they are not symmetric:
 | **Inbound** | Jaguar **WebSocket** (`wss://<maestro>/ws?token=…`) | `src/socket/socket.ts` |
 | **Outbound** | Jaguar **REST** (`POST /jaguar/apiv1/rooms/:id/messages`) | `src/outbound.ts` → `src/api/message.api.ts` |
 
+Both are held by **one session** (`src/session.ts`), which is what `startAccount` opens and
+what every outbound path sends through.
+
 The socket is the *only* inbound path — no polling, no webhook fallback. Sends never touch it.
 
 Upstream services (see the `omadeus` and `jaguar` repos' own `AGENTS.md`):
@@ -44,7 +47,7 @@ Upstream services (see the `omadeus` and `jaguar` repos' own `AGENTS.md`):
 
 ### The three values everything hangs off
 
-Resolved at startup in `gateway.startAccount`, then fixed:
+Resolved once when `openOmadeusSession` runs, then fixed:
 
 ```
 roomId           ← GET /jaguar/apiv1/directs/openclaw_bot   (Jaguar resolves it from the caller)
@@ -77,14 +80,20 @@ variables, no CLI flags, no cached session token on disk.
 
 ### Key modules
 
-- `src/channel.ts` — the `ChannelPlugin` object and `gateway.startAccount` (auth → pin room →
-  socket → handler).
+- `src/channel.ts` — the `ChannelPlugin` object. Holds one `activeSession` and little else.
+- `src/session.ts` — **the live connection.** `openOmadeusSession` composes credential → room →
+  handler → socket; the returned session is `roomId`, `send`, `close`. Its adapters are
+  injectable (`deps`), which is what makes the lifecycle testable.
 - `src/room.ts` — pins the served room; validates `openClawMemberId` against its members.
 - `src/inbound.ts` — parses Jaguar frames and decides admission.
 - `src/handler.ts` — debounce, read receipt, text-less reply, dispatch onto the turn kernel.
+- `src/turn.ts` — builds the turn context for one admitted message, as a value.
 - `src/reply.ts` — delivery adapter + reply options for one turn.
-- `src/token.ts` — session JWT with auto-refresh 5 minutes before expiry.
-- `src/socket/socket.ts` — the WS: reconnect backoff, heartbeat, pre-connect token refresh.
+- `src/token.ts` — the credential. `openOmadeusToken(account)` picks the adapter, logs in, and
+  starts auto-refresh; reads refresh themselves 5 minutes before expiry.
+- `src/socket/socket.ts` — the WS: reconnect backoff, connection transitions, token freshness.
+- `src/socket/heartbeat.ts` — the Jaguar keep-alive protocol.
+- `src/utils/http.util.ts` — every Omadeus request, and the one error type they all raise.
 
 ## Conventions
 
@@ -146,6 +155,14 @@ The OpenClaw DM always exists by the time an instance is provisioned. `pinOpenCl
 immediately: those mean the gateway is pointed at the wrong Omadeus or holds the wrong
 credentials, and no amount of retrying fixes it.
 
+Retryability is decided by `isTransientFailure`, which is true only for an `OmadeusHttpError`
+whose status is 5xx or `0` (never reached the server). **Every** Omadeus request raises that
+one type — that is why `src/utils/http.util.ts` decodes bodies and throws rather than handing
+back a `Response`. When some calls threw it and others threw a plain `Error`, the check was
+`err.name !== "OmadeusHttpError"` and got the member-mismatch error backwards: a misconfigured
+`openClawMemberId` was retried 5 times over 8 seconds before surfacing. If you add a request
+path, raise `OmadeusHttpError` or it will be classified as permanent.
+
 ### `formatAllowFrom` must pass values through
 
 OpenClaw runs **both** `commands.ownerAllowFrom` and the inbound sender id through
@@ -187,6 +204,29 @@ capability *declarations* — there is no implementation hook on it, and the mac
 a streaming draft in place lives in each bundled channel's own outbound builder, which the
 shared SDK does not export. Declaring these would advertise behavior nothing backs.
 
+### `onConnect` is per transition, not per socket
+
+`createJaguarSocket` fires `onConnect` when the connection comes up and not again until an
+`onDisconnect` has fired. The session reports `openclawStatus: "connected"` from it, and
+Jaguar does not want that on every reconnect. The guard lives in the socket because the caller
+that kept its own `isConnected` flag was duplicating state the socket already had.
+
+The socket's interface is `connect` and `disconnect`. `send`, `isConnected` and `onOtherEvent`
+were removed — nothing called them, and the last one only ever meant "a frame arrived", which
+is now the heartbeat's business.
+
+### Reading the credential can refresh it
+
+`OmadeusTokenManager` is `authorization()`, `wsToken()`, `close()`. Both reads are `async` and
+re-authenticate first when the token is within 5 minutes of expiry, so no caller sequences a
+refresh. `openOmadeusToken(account)` is the only constructor a runtime path should use: it
+picks the adapter the credential source implies, logs in before it resolves, and starts
+auto-refresh. `close()` is the whole cleanup obligation.
+
+Do not re-add `getToken`/`needsRefresh`/`refresh`/`startAutoRefresh` to that interface. The
+ordering rules they forced onto callers are exactly what the module now owns, and one of the
+old members (`getPayload`) threw by design on the API-key adapter.
+
 ### Two AI agents share these rooms
 
 Omadeus has its own `bot_openclaw` prompt-only agent (`omadeus` repo,
@@ -201,10 +241,21 @@ reply. It covers the three failures this channel actually has — a dropped mess
 loop, and answering the wrong room. Break the author check and it fails; that has been
 verified by mutation.
 
-`src/inbound.test.ts` and `src/room.test.ts` cover the pure decisions around it.
+Around it:
 
-Still worth a real DM through a running gateway after touching `src/channel.ts`, since nothing
-exercises `gateway.startAccount` itself:
+- `src/session.test.ts` — the gateway lifecycle through `deps`: startup ordering, that a failed
+  room pin releases the credential, that `close` is idempotent, and that `connected` is
+  reported. This is what `deps` on `openOmadeusSession` exists for; keep it injectable.
+- `src/token.test.ts` — adapter choice, login-before-return, refresh-on-read, one login per
+  burst, and that `close` stops the timer.
+- `src/utils/http.util.test.ts` — one error type, and the `isTransientFailure` classification.
+- `src/turn.test.ts` — the turn context the kernel receives, field by field.
+- `src/socket/heartbeat.test.ts` — the keep-alive protocol against frame fixtures.
+- `src/inbound.test.ts`, `src/room.test.ts`, `src/owner-policy.test.ts` — the pure decisions.
+
+`gateway.startAccount` itself is still uncovered — it is now thin enough to read, but the wiring
+between it and OpenClaw is not exercised, so a real DM through a running gateway is still worth
+it after touching `src/channel.ts`:
 
 ```bash
 npm run build && openclaw plugins install . --link   # then restart the gateway

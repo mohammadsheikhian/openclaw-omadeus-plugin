@@ -12,36 +12,28 @@ import {
   type ChannelPlugin,
   type OpenClawConfig,
 } from "../runtime-api.js";
-import { configureOpenClawBot } from "./api/auth.api.js";
 import {
   getOmadeusChannelConfig,
   listOmadeusAccountIds,
   resolveDefaultOmadeusAccountId,
   resolveOmadeusAccount,
 } from "./config.js";
-import { createOmadeusMessageHandler } from "./handler.js";
-import { parseJaguarMessage } from "./inbound.js";
 import { omadeusSetupWizard } from "./onboarding.js";
-import { sendOmadeusMessage } from "./outbound.js";
-import { pinOpenClawRoom } from "./room.js";
 import { getOmadeusRuntime } from "./runtime.js";
-import { createJaguarSocket, type JaguarSocket } from "./socket/socket.js";
-import { createApiKeyTokenManager, createTokenManager, type OmadeusTokenManager } from "./token.js";
-import type { ResolvedOmadeusAccount as Account } from "./types.js";
-import type { OmadeusApiOptions } from "./utils/http.util.js";
+import { openOmadeusSession, type OmadeusSession } from "./session.js";
+import type { OmadeusLog, ResolvedOmadeusAccount as Account } from "./types.js";
 
 const CHANNEL_ID = "omadeus" as const;
 
 /**
- * What a running gateway holds. `roomId` is the DM this channel serves, pinned
- * once at startup — sends never take a target because there is nowhere else to
- * send.
+ * The running gateway, or `null`.
+ *
+ * One member is enough: everything a caller needs from a live connection is on
+ * the session's own interface. A singleton is correct here — an Omadeus gateway
+ * serves exactly one member's DM — but it is now a singleton *of a module*
+ * rather than a bag of fields three call sites reach into.
  */
-const gatewayState: {
-  apiOpts: OmadeusApiOptions | null;
-  jaguar: JaguarSocket | null;
-  roomId: number | null;
-} = { apiOpts: null, jaguar: null, roomId: null };
+let activeSession: OmadeusSession | null = null;
 
 const isUnconfigured = (account: Account) => account.credentialSource === "none";
 
@@ -80,19 +72,16 @@ function readStringParam(params: Record<string, unknown>, keys: string[]): strin
   return undefined;
 }
 
-/** The connected gateway, or an explanation of why there isn't one. */
-function requireGateway(): { apiOpts: OmadeusApiOptions; roomId: number } {
-  const { apiOpts, roomId } = gatewayState;
-  if (!apiOpts || roomId === null) {
+/** The running session, or an explanation of why there isn't one. */
+function requireSession(): OmadeusSession {
+  if (!activeSession) {
     throw new Error("Omadeus: not connected. Is the gateway running with Omadeus enabled?");
   }
-  return { apiOpts, roomId };
+  return activeSession;
 }
 
 async function sendOmadeusText(text: string): Promise<{ messageId: string }> {
-  const { apiOpts, roomId } = requireGateway();
-  const sent = await sendOmadeusMessage(apiOpts, { roomId, text });
-  return { messageId: sent.messageId };
+  return await requireSession().send(text);
 }
 
 const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
@@ -250,11 +239,10 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
     // discarded rather than validated: there is no second room a mistake could
     // reach, and rejecting it would only strand a reply the agent meant to send.
     resolveTarget: () => {
-      const roomId = gatewayState.roomId;
-      if (roomId === null) {
+      if (!activeSession) {
         return { ok: false as const, error: new Error("Omadeus: not connected.") };
       }
-      return { ok: true as const, to: String(roomId) };
+      return { ok: true as const, to: String(activeSession.roomId) };
     },
   },
 
@@ -318,11 +306,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
   gateway: {
     startAccount: async (ctx) => {
       const { account, cfg, abortSignal } = ctx;
-      const log = ctx.log ?? {
-        info: () => {},
-        warn: () => {},
-        error: () => {},
-      };
+      const log: OmadeusLog = ctx.log ?? { info: () => {}, warn: () => {}, error: () => {} };
       log.info(`[omadeus] starting for org ${account.organizationId}`);
 
       const fail = (message: string) => {
@@ -341,122 +325,34 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         return;
       }
 
-      // Two credentials, two managers. The API key is static; the password flow
-      // holds a JWT in memory and re-authenticates before it expires. Nothing
-      // is written back to config in either case.
-      let tokenManager: OmadeusTokenManager;
-      if (account.apiKey) {
-        tokenManager = createApiKeyTokenManager(account.apiKey);
-      } else {
-        const casTokenManager = createTokenManager({
-          casUrl: account.casUrl,
-          omadeusUrl: account.omadeusUrl,
-          email: account.email,
-          password: account.password,
-          organizationId: account.organizationId,
-          onError: (err) => {
-            log.error(`[omadeus] token refresh failed: ${err.message}`);
-            ctx.setStatus({ accountId: account.accountId, lastError: err.message });
+      let session: OmadeusSession;
+      try {
+        session = await openOmadeusSession({
+          account: { ...account, openClawMemberId },
+          cfg,
+          runtime: ctx.runtime,
+          log,
+          events: {
+            onInbound: () =>
+              ctx.setStatus({ accountId: account.accountId, lastInboundAt: Date.now() }),
+            onConnect: () =>
+              ctx.setStatus({
+                accountId: account.accountId,
+                connected: true,
+                lastConnectedAt: Date.now(),
+              }),
+            onDisconnect: () =>
+              ctx.setStatus({ accountId: account.accountId, connected: false }),
+            onError: (err) =>
+              ctx.setStatus({ accountId: account.accountId, lastError: err.message }),
           },
         });
-        try {
-          await casTokenManager.refresh();
-        } catch (err) {
-          fail(`initial auth failed: ${err instanceof Error ? err.message : String(err)}`);
-          return;
-        }
-        casTokenManager.startAutoRefresh();
-        tokenManager = casTokenManager;
-      }
-
-      const apiOpts: OmadeusApiOptions = { omadeusUrl: account.omadeusUrl, tokenManager };
-
-      // Resolving the room proves the credentials work and yields the only
-      // identifier the channel needs. A failure here is fatal to the account:
-      // without a room there is nothing to serve.
-      let roomId: number;
-      try {
-        roomId = await pinOpenClawRoom({ apiOpts, openClawMemberId, log });
       } catch (err) {
-        tokenManager.stopAutoRefresh();
         fail(err instanceof Error ? err.message : String(err));
         return;
       }
 
-      gatewayState.apiOpts = apiOpts;
-      gatewayState.roomId = roomId;
-
-      const handleMessage = createOmadeusMessageHandler({
-        cfg,
-        runtime: ctx.runtime,
-        log,
-        apiOpts,
-        roomId,
-        openClawMemberId,
-      });
-
-      let isConnected = false;
-      const jaguar = createJaguarSocket({
-        omadeusUrl: account.omadeusUrl,
-        tokenManager,
-        log,
-        onMessage: (msg) => {
-          const inbound = parseJaguarMessage(msg, log);
-          if (!inbound) return;
-          // Logged before admission so every arrival is accounted for. Without
-          // this a dropped message is the only trace, and a message that never
-          // arrives looks identical to one that was silently discarded.
-          log.info(
-            `[jaguar] message ${inbound.messageId} room=${inbound.roomId} ` +
-              `from=${inbound.fromReferenceId}: ${inbound.content.slice(0, 80)}`,
-          );
-          ctx.setStatus({ accountId: account.accountId, lastInboundAt: Date.now() });
-          handleMessage(inbound).catch((err) => {
-            log.error(
-              `[jaguar] dispatch error: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          });
-        },
-        onConnect: () => {
-          if (isConnected) return;
-          isConnected = true;
-          ctx.setStatus({
-            accountId: account.accountId,
-            connected: true,
-            lastConnectedAt: Date.now(),
-          });
-          // Tell Omadeus the gateway is live. Until this lands, Jaguar keeps
-          // routing the member's OpenClaw DM to the setup assistant and refuses
-          // `asOpenclaw` on send/see, so the bot cannot answer.
-          //
-          // Fire-and-forget: a failure here must not tear down a healthy
-          // socket, and `onDisconnect` clears `isConnected`, so the next
-          // reconnect retries.
-          configureOpenClawBot({
-            omadeusUrl: account.omadeusUrl,
-            authorization: tokenManager.authorizationHeader(),
-            openclawStatus: "connected",
-          })
-            .then(() => log.info("[omadeus] reported OpenClaw status: connected"))
-            .catch((err) =>
-              log.warn(
-                "[omadeus] failed to report connected status; the OpenClaw DM will keep " +
-                  `going to the setup assistant: ${
-                    err instanceof Error ? err.message : String(err)
-                  }`,
-              ),
-            );
-        },
-        onDisconnect: () => {
-          isConnected = false;
-          ctx.setStatus({ accountId: account.accountId, connected: false });
-        },
-        onError: (err) => ctx.setStatus({ accountId: account.accountId, lastError: err.message }),
-      });
-
-      jaguar.connect();
-      gatewayState.jaguar = jaguar;
-
+      activeSession = session;
       ctx.setStatus({ accountId: account.accountId, running: true, lastStartAt: Date.now() });
 
       await new Promise<void>((resolve) => {
@@ -467,11 +363,8 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         abortSignal.addEventListener("abort", () => resolve(), { once: true });
       });
 
-      tokenManager.stopAutoRefresh();
-      jaguar.disconnect();
-      gatewayState.apiOpts = null;
-      gatewayState.jaguar = null;
-      gatewayState.roomId = null;
+      session.close();
+      if (activeSession === session) activeSession = null;
       ctx.setStatus({ accountId: account.accountId, running: false, lastStopAt: Date.now() });
     },
   },

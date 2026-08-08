@@ -55,15 +55,32 @@ describe("pinOpenClawRoom", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("fails loudly when openClawMemberId is not in the room", async () => {
-    // Otherwise this only shows up later as the channel answering itself.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => jsonResponse({ id: 777, members: [{ referenceId: 8 }, { referenceId: 12 }] })),
+  it("fails loudly when openClawMemberId is not in the room, without retrying", async () => {
+    // Otherwise this only shows up later as the channel answering itself. And
+    // the request succeeded — only the config is wrong — so there is nothing to
+    // retry. Classifying by `err.name` used to make this transient, costing the
+    // operator 5 attempts over 8 seconds before the error surfaced.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ id: 777, members: [{ referenceId: 8 }, { referenceId: 12 }] }),
     );
+    vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       pinOpenClawRoom({ apiOpts, openClawMemberId: 99, log, delay: async () => {} }),
     ).rejects.toThrow(/openClawMemberId 99 is not a member/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a network failure, since a pod can start before its gateway is up", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce(jsonResponse({ id: 777, members: [{ referenceId: 99 }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      pinOpenClawRoom({ apiOpts, openClawMemberId: 99, log, delay: async () => {} }),
+    ).resolves.toBe(777);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

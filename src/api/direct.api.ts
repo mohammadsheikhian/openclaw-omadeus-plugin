@@ -1,4 +1,9 @@
-import { jaguarFetch, OmadeusHttpError, type OmadeusApiOptions } from "../utils/http.util.js";
+import {
+  jaguarRequest,
+  MALFORMED_RESPONSE_STATUS,
+  OmadeusHttpError,
+  type OmadeusApiOptions,
+} from "../utils/http.util.js";
 
 /** A member of a direct room (only the field we need to tell the two members apart). */
 export type OmadeusDirectMember = {
@@ -36,18 +41,18 @@ function readMembers(value: unknown): OmadeusDirectMember[] {
  * the only room this channel serves, and one call at startup pins it.
  */
 export async function getOpenClawDirect(opts: OmadeusApiOptions): Promise<OmadeusDirect> {
-  const res = await jaguarFetch(opts, "/directs/openclaw_bot", { method: "GET" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new OmadeusHttpError(
-      `Omadeus get OpenClaw direct failed (${res.status}): ${text.slice(0, 200)}`,
-      res.status,
-    );
-  }
-  const body = (await res.json()) as Record<string, unknown>;
-  const id = body.id;
+  const body = await jaguarRequest<Record<string, unknown>>(opts, "/directs/openclaw_bot", {
+    label: "Omadeus get OpenClaw direct",
+    method: "GET",
+  });
+  const id = body?.id;
   if (typeof id !== "number" || !Number.isFinite(id)) {
-    throw new Error("Omadeus OpenClaw direct response is missing a numeric room id");
+    // A response we cannot read is a server fault, so it is raised as one and
+    // stays retryable — the same treatment a 5xx gets.
+    throw new OmadeusHttpError(
+      "Omadeus OpenClaw direct response is missing a numeric room id",
+      MALFORMED_RESPONSE_STATUS,
+    );
   }
   return { id, members: readMembers(body.members) };
 }

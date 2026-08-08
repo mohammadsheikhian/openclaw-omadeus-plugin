@@ -1,4 +1,21 @@
 // ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+/**
+ * Message-only on purpose. The gateway logger accepts a structured second
+ * argument and then prints only the message, so anything put there is lost —
+ * which is how a drop reason ends up invisible. Narrowing the type here makes
+ * that mistake impossible rather than merely discouraged.
+ */
+export type OmadeusLog = {
+  info: (msg: string) => void;
+  warn: (msg: string) => void;
+  error: (msg: string) => void;
+  debug?: (msg: string) => void;
+};
+
+// ---------------------------------------------------------------------------
 // Omadeus config shape (stored under channels.omadeus in OpenClaw config)
 // ---------------------------------------------------------------------------
 

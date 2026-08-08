@@ -4,21 +4,9 @@ import { admitOmadeusMessage } from "./inbound.js";
 import { sendOmadeusMessage } from "./outbound.js";
 import { createOmadeusTurnDelivery } from "./reply.js";
 import { getOmadeusRuntime } from "./runtime.js";
-import type { OmadeusInboundMessage } from "./types.js";
+import { buildOmadeusTurn } from "./turn.js";
+import type { OmadeusInboundMessage, OmadeusLog as Log } from "./types.js";
 import type { OmadeusApiOptions } from "./utils/http.util.js";
-
-/**
- * Message-only on purpose. The gateway logger accepts a structured second
- * argument and then prints only the message, so anything put there is lost —
- * which is how a drop reason ends up invisible. Narrowing the type here makes
- * that mistake impossible rather than merely discouraged.
- */
-type Log = {
-  info: (msg: string) => void;
-  warn: (msg: string) => void;
-  error: (msg: string) => void;
-  debug?: (msg: string) => void;
-};
 
 const TEXT_ONLY_REPLY =
   "I can only read text messages — attachments and media aren't supported yet.";
@@ -68,7 +56,6 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     inbound: OmadeusInboundMessage,
     ackMessageIds: number[] = [inbound.messageId],
   ) => {
-    const senderId = String(inbound.fromReferenceId);
     const rawBody = inbound.content;
 
     // Admitted but unusable (attachment-only, or a bare @mention). Answer
@@ -91,15 +78,14 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
     const route = core.channel.routing.resolveAgentRoute({
       cfg,
       channel: "omadeus",
-      peer: { kind: "direct", id: senderId },
+      peer: { kind: "direct", id: String(inbound.fromReferenceId) },
     });
 
-    const preview = rawBody.replace(/\s+/g, " ").slice(0, 160);
-    const to = `room:${roomId}`;
+    const turn = buildOmadeusTurn({ inbound, route, roomId });
 
-    core.system.enqueueSystemEvent(`Omadeus DM from ${senderId}: ${preview}`, {
+    core.system.enqueueSystemEvent(turn.systemEvent.text, {
       sessionKey: route.sessionKey,
-      contextKey: `omadeus:message:${roomId}:${inbound.timestamp}`,
+      contextKey: turn.systemEvent.contextKey,
     });
 
     const storePath = core.channel.session.resolveStorePath(
@@ -116,7 +102,9 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
       roomId,
     });
 
-    log.info(`[omadeus] dispatching message ${inbound.messageId} to agent (session=${route.sessionKey})`);
+    log.info(
+      `[omadeus] dispatching message ${inbound.messageId} to agent (session=${route.sessionKey})`,
+    );
     try {
       await core.channel.inbound.run({
         channel: "omadeus",
@@ -126,65 +114,35 @@ export function createOmadeusMessageHandler(deps: OmadeusMessageHandlerDeps) {
           ingest: (msg) => ({
             id: String(msg.messageId),
             timestamp: msg.timestamp ?? Date.now(),
-            rawText: rawBody,
-            textForAgent: rawBody,
-            textForCommands: rawBody.trim(),
+            rawText: turn.body,
+            textForAgent: turn.body,
+            textForCommands: turn.body.trim(),
             raw: msg,
           }),
-          resolveTurn: (input) => {
-            const ctxPayload = core.channel.inbound.buildContext({
-              channel: "omadeus",
-              accountId: route.accountId,
-              provider: "omadeus",
-              surface: "omadeus",
-              messageId: String(inbound.messageId),
+          resolveTurn: (input) => ({
+            cfg,
+            channel: "omadeus",
+            accountId: route.accountId,
+            agentId: route.agentId,
+            routeSessionKey: route.sessionKey,
+            storePath,
+            // The kernel's ingested timestamp wins over the frame's.
+            ctxPayload: core.channel.inbound.buildContext({
+              ...turn.context,
               timestamp: input.timestamp,
-              from: `omadeus:${senderId}`,
-              sender: { id: senderId, name: senderId },
-              conversation: { kind: "direct", id: senderId, label: `Omadeus DM ${senderId}` },
-              route: {
-                agentId: route.agentId,
-                accountId: route.accountId,
-                routeSessionKey: route.sessionKey,
-                dispatchSessionKey: route.sessionKey,
+            }),
+            recordInboundSession: core.channel.session.recordInboundSession,
+            dispatchReplyWithBufferedBlockDispatcher:
+              core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+            delivery,
+            dispatcherOptions,
+            replyOptions,
+            record: {
+              onRecordError: (err: unknown) => {
+                log.debug?.(`[omadeus] failed updating session meta: ${String(err)}`);
               },
-              reply: { to, originatingTo: to },
-              message: {
-                rawBody,
-                bodyForAgent: rawBody,
-                commandBody: rawBody.trim(),
-                envelopeFrom: senderId,
-                preview,
-              },
-              extra: {
-                // The channel only serves the OpenClaw DM, so every admitted
-                // message is addressed to the bot.
-                WasMentioned: true,
-                OriginatingChannel: "omadeus" as const,
-              },
-            });
-
-            return {
-              cfg,
-              channel: "omadeus",
-              accountId: route.accountId,
-              agentId: route.agentId,
-              routeSessionKey: route.sessionKey,
-              storePath,
-              ctxPayload,
-              recordInboundSession: core.channel.session.recordInboundSession,
-              dispatchReplyWithBufferedBlockDispatcher:
-                core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
-              delivery,
-              dispatcherOptions,
-              replyOptions,
-              record: {
-                onRecordError: (err: unknown) => {
-                  log.debug?.(`[omadeus] failed updating session meta: ${String(err)}`);
-                },
-              },
-            };
-          },
+            },
+          }),
         },
         log: (event) => {
           if (event.event === "error") {

@@ -20,34 +20,42 @@ OpenClaw helpers through `getOmadeusRuntime()`.
 
 ## 2. Gateway startup
 
-`gateway.startAccount` in `src/channel.ts`, in order. Any failure sets `lastError` on the
-account status and returns — the channel does not start half-configured.
+`gateway.startAccount` in `src/channel.ts` checks two things and then opens a session. Any
+failure sets `lastError` on the account status and returns — the channel does not start
+half-configured.
 
 1. **Resolve the account** (`src/config.ts`). Exactly two credential shapes are accepted:
    `apiKey`, or `email` + `password` + `organizationId`. Config is the only source.
 2. **Require `openClawMemberId`.** Without it the channel cannot recognise its own replies, so
    it refuses to start rather than risk answering itself.
-3. **Build the token manager** (`src/token.ts`):
+
+`openOmadeusSession` (`src/session.ts`) does the rest, in order. Each step proves the one
+before it, and anything already opened is released before an error leaves the function:
+
+3. **Open the credential** — `openOmadeusToken` (`src/token.ts`):
    - `apiKey` → static, nothing to refresh.
    - password → CAS login through `src/auth.ts`, then auto-refresh **5 minutes before expiry**.
      The token lives in memory only and is never written back to config.
+   It resolves only once the credential works, so a bad password fails here.
 4. **Pin the room** (`src/room.ts`) via `GET /jaguar/apiv1/directs/openclaw_bot`. Jaguar
-   resolves the DM from the authenticated member, so no room id is ever guessed. This call
-   doubles as the credential check, and it verifies `openClawMemberId` is really a member of
-   that room. 5xx and network errors retry; 401/404 fail immediately.
+   resolves the DM from the authenticated member, so no room id is ever guessed. It verifies
+   `openClawMemberId` is really a member of that room. 5xx and network errors retry; 401/404
+   and a member mismatch fail immediately.
 5. **Create the inbound handler** (`src/handler.ts`) bound to that room id.
 6. **Connect the socket** (`src/socket/socket.ts`) to `wss://<maestro>/ws?token=…`.
-7. On `open`, report `openclawStatus: "connected"` to Dolphin (fire-and-forget). Until this
-   lands, Jaguar routes the DM to its own setup assistant and refuses `asOpenclaw`.
+7. On the first connection transition, report `openclawStatus: "connected"` to Dolphin
+   (fire-and-forget). Until this lands, Jaguar routes the DM to its own setup assistant and
+   refuses `asOpenclaw`.
 
-Teardown on abort: stop the refresh timer, disconnect the socket, clear the pinned room.
+`startAccount` holds the resulting session in `activeSession` and waits on the abort signal.
+Teardown is `session.close()`: disconnect the socket, release the credential.
 
 ## 3. Inbound: frame → agent turn
 
 ```
 Jaguar WS frame
-  └─ socket.ts            keep-alive? handle and return. otherwise:
-     └─ isOmadeusMessage  chat frame, or some other event?
+  └─ heartbeat.observe    keep-alive? handle and return. either way, we are alive
+     └─ isOmadeusMessage  chat frame, or some other event we ignore?
         └─ parseJaguarMessage   normalize; strip a leading **@mention**; drop removed
            └─ admitOmadeusMessage
                 ├─ roomId !== pinned      → drop "other_room"      (logged at info)
@@ -66,12 +74,17 @@ with newlines and acknowledging every source message. On flush:
    Sent at dispatch time, matching the declared `after_agent_dispatch` ack policy.
 3. **Resolve the route** — `core.channel.routing.resolveAgentRoute` with a direct peer, giving
    the agent id, account id, and session key.
-4. **Enqueue a system event** so the turn shows up in OpenClaw's activity.
-5. **Build the delivery adapter** (`src/reply.ts`).
-6. **Run the turn** — `core.channel.inbound.run` with an adapter that ingests the message and
-   resolves a turn from `core.channel.inbound.buildContext`.
+4. **Build the turn** (`src/turn.ts`) — the reply target (`room:<id>`), the preview, the system
+   event text and key, and the full context payload, as one value.
+5. **Enqueue a system event** so the turn shows up in OpenClaw's activity.
+6. **Build the delivery adapter** (`src/reply.ts`).
+7. **Run the turn** — `core.channel.inbound.run` with an adapter that ingests the message and
+   hands the turn context to `core.channel.inbound.buildContext`.
 
 ## 4. Outbound: reply → room
+
+All Omadeus REST goes through `src/utils/http.util.ts`, which decodes the body or raises
+`OmadeusHttpError` carrying a status — there is no other error convention.
 
 `src/reply.ts` returns a `delivery` whose `deliver` chunks the text
 (`chunkTextWithMode`, 4000 chars, markdown-aware) and posts each chunk through
@@ -88,7 +101,7 @@ and therefore dropped at admission. That is the whole echo-suppression design.
 
 `message(action=send)` goes through `actions.prepareSendPayload` onto core's durable send path
 (persist, retry, recover, ack), landing in the outbound adapter. There is no target to resolve:
-one room is served, so `resolveTarget` always returns the pinned id and any target the agent
+one room is served, so `resolveTarget` always returns the session's pinned id and any target the agent
 supplied is discarded. `handleAction`'s `send` branch is the fallback for paths that bypass the
 durable route.
 
