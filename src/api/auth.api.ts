@@ -97,12 +97,12 @@ export async function createAuthorizationCode(params: {
 }
 
 export async function obtainSessionToken(params: {
-  maestroUrl: string;
+  omadeusUrl: string;
   authorizationCode: string;
   organizationId: number;
 }): Promise<string> {
-  const { maestroUrl, authorizationCode, organizationId } = params;
-  const url = `${maestroUrl}/dolphin/apiv1/oauth2/tokens`;
+  const { omadeusUrl, authorizationCode, organizationId } = params;
+  const url = `${omadeusUrl}/dolphin/apiv1/oauth2/tokens`;
   const res = await omadeusFetch("Omadeus session token request", url, {
     method: "OBTAIN",
     headers: { "Content-Type": "application/json;charset=UTF-8" },
@@ -120,11 +120,11 @@ export async function obtainSessionToken(params: {
 }
 
 export async function listOrganizations(params: {
-  maestroUrl: string;
+  omadeusUrl: string;
   email: string;
 }): Promise<OmadeusOrganization[]> {
-  const { maestroUrl, email } = params;
-  const url = `${maestroUrl}/dolphin/apiv1/organizations`;
+  const { omadeusUrl, email } = params;
+  const url = `${omadeusUrl}/dolphin/apiv1/organizations`;
   const res = await omadeusFetch("Omadeus list organizations", url, {
     method: "LIST",
     headers: { "Content-Type": "application/json;charset=UTF-8" },
@@ -142,11 +142,11 @@ export async function listOrganizations(params: {
  * Dolphin authenticates the request with the key itself.
  */
 export async function verifyApiKey(params: {
-  maestroUrl: string;
+  omadeusUrl: string;
   apiKey: string;
 }): Promise<{ memberId: number; organizationId: number }> {
-  const { maestroUrl, apiKey } = params;
-  const url = `${maestroUrl}/dolphin/apiv1/apikeys`;
+  const { omadeusUrl, apiKey } = params;
+  const url = `${omadeusUrl}/dolphin/apiv1/apikeys`;
   const res = await omadeusFetch("Omadeus verify API key", url, {
     method: "GET",
     headers: { Authorization: `ApiToken ${apiKey}` },
@@ -163,17 +163,17 @@ export async function verifyApiKey(params: {
 }
 
 export async function listOrganizationMembers(params: {
-  maestroUrl: string;
+  omadeusUrl: string;
   /** Full Authorization header value (`Bearer <jwt>` or `ApiToken <key>`). */
   authorization: string;
   organizationId: number;
   email?: string;
 }): Promise<OmadeusOrganizationMember[]> {
-  const { maestroUrl, authorization, organizationId, email } = params;
+  const { omadeusUrl, authorization, organizationId, email } = params;
   const search = new URLSearchParams();
   if (email) search.set("email", email);
   const qs = search.toString();
-  const url = `${maestroUrl}/dolphin/apiv1/organizations/${organizationId}/members${qs ? `?${qs}` : ""}`;
+  const url = `${omadeusUrl}/dolphin/apiv1/organizations/${organizationId}/members${qs ? `?${qs}` : ""}`;
   const res = await omadeusFetch("Omadeus list organization members", url, {
     method: "LIST",
     headers: {
@@ -198,13 +198,13 @@ export async function listOrganizationMembers(params: {
  * wizard only means credentials exist, not that the gateway reached Jaguar.
  */
 export async function configureOpenClawBot(params: {
-  maestroUrl: string;
+  omadeusUrl: string;
   /** Full Authorization header value (`Bearer <jwt>` or `ApiToken <key>`). */
   authorization: string;
   openclawStatus: OmadeusOpenClawStatus;
 }): Promise<void> {
-  const { maestroUrl, authorization, openclawStatus } = params;
-  const url = `${maestroUrl}/dolphin/apiv1/settings/bots/openclaw`;
+  const { omadeusUrl, authorization, openclawStatus } = params;
+  const url = `${omadeusUrl}/dolphin/apiv1/settings/bots/openclaw`;
   const res = await omadeusFetch("Omadeus configure OpenClaw bot", url, {
     method: "POST",
     headers: {

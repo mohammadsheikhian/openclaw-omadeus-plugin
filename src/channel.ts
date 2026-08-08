@@ -53,15 +53,12 @@ const isUnconfigured = (account: Account) => account.credentialSource === "none"
 
 let lastPersistedToken: string | null = null;
 
-async function persistSessionToken(
-  token: string,
-  environment: Account["environment"],
-): Promise<void> {
+async function persistSessionToken(token: string): Promise<void> {
   if (lastPersistedToken === token) return;
   const runtime = getOmadeusRuntime();
   const cfg = runtime.config.current() as OpenClawConfig;
   const section = getOmadeusChannelConfig(cfg) ?? {};
-  if (section.sessionToken === token && section.sessionTokenEnvironment === environment) {
+  if (section.sessionToken === token) {
     lastPersistedToken = token;
     return;
   }
@@ -73,7 +70,6 @@ async function persistSessionToken(
         omadeus: {
           ...(getOmadeusChannelConfig(draft) ?? {}),
           sessionToken: token,
-          sessionTokenEnvironment: environment,
         },
       };
     },
@@ -106,12 +102,12 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
   defaultAccountId: resolveDefaultOmadeusAccountId,
   deleteMode: "clear-fields",
   clearBaseFields: [
-    "environment",
+    "casUrl",
+    "omadeusUrl",
     "email",
     "password",
     "organizationId",
     "sessionToken",
-    "sessionTokenEnvironment",
     "apiKey",
     "openClawMemberId",
     "openClawReferenceId",
@@ -168,7 +164,7 @@ async function sendOmadeusText(params: {
   }
   const deps: OutboundDeps = {
     apiOpts: {
-      maestroUrl: resolveOmadeusAccount({ cfg: params.cfg }).maestroUrl,
+      omadeusUrl: resolveOmadeusAccount({ cfg: params.cfg }).omadeusUrl,
       tokenManager: gatewayState.tokenManager,
     },
     sentTracker: gatewayState.sentTracker ?? undefined,
@@ -225,7 +221,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         if (!gatewayState.tokenManager) {
           throw new Error("Omadeus: not connected; gateway must be running with Omadeus enabled.");
         }
-        return { maestroUrl: account.maestroUrl, tokenManager: gatewayState.tokenManager };
+        return { omadeusUrl: account.omadeusUrl, tokenManager: gatewayState.tokenManager };
       };
 
       // Plain text send. Harnesses whose `sourceVisibleReplies` default is `message_tool`
@@ -290,7 +286,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       enabled: account.enabled,
       configured: !isUnconfigured(account),
       credentialSource: account.credentialSource,
-      baseUrl: account.maestroUrl,
+      baseUrl: account.omadeusUrl,
     }),
   },
 
@@ -421,7 +417,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         configured: !isUnconfigured(account),
         runtime,
       }),
-      baseUrl: account.maestroUrl,
+      baseUrl: account.omadeusUrl,
       credentialSource: account.credentialSource,
       connected: runtime?.connected ?? false,
       lastConnectedAt: runtime?.lastConnectedAt ?? null,
@@ -467,7 +463,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         tokenManager = createApiKeyTokenManager(account.apiKey);
         try {
           const identity = await verifyApiKey({
-            maestroUrl: account.maestroUrl,
+            omadeusUrl: account.omadeusUrl,
             apiKey: account.apiKey,
           });
           selfReferenceId = identity.memberId;
@@ -480,14 +476,14 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       } else {
         const casTokenManager = createTokenManager({
           casUrl: account.casUrl,
-          maestroUrl: account.maestroUrl,
+          omadeusUrl: account.omadeusUrl,
           email: account.email,
           password: account.password,
           organizationId: account.organizationId,
           initialToken: account.sessionToken,
           onRefresh: (token) => {
             log.info("[omadeus] token refreshed");
-            void persistSessionToken(token, account.environment).catch((err) =>
+            void persistSessionToken(token).catch((err) =>
               log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
             );
           },
@@ -517,7 +513,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       gatewayState.sentTracker = sentTracker;
 
       const outboundDeps: OutboundDeps = {
-        apiOpts: { maestroUrl: account.maestroUrl, tokenManager },
+        apiOpts: { omadeusUrl: account.omadeusUrl, tokenManager },
         sentTracker,
       };
 
@@ -528,7 +524,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
        */
       const announceConnected = () => {
         configureOpenClawBot({
-          maestroUrl: account.maestroUrl,
+          omadeusUrl: account.omadeusUrl,
           authorization: tokenManager.authorizationHeader(),
           openclawStatus: "connected",
         })
@@ -552,7 +548,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       });
 
       const jaguar = createJaguarSocketClient({
-        maestroUrl: account.maestroUrl,
+        omadeusUrl: account.omadeusUrl,
         tokenManager,
         log,
         onMessage: (msg) => {

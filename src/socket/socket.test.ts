@@ -29,14 +29,14 @@ const tokenManager: OmadeusTokenManager = {
 let client: OmadeusSocketClient | null = null;
 let server: WebSocketServer | null = null;
 
-async function createServer(): Promise<{ server: WebSocketServer; maestroUrl: string }> {
+async function createServer(): Promise<{ server: WebSocketServer; omadeusUrl: string }> {
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(wss, "listening");
   const address = wss.address();
   if (!address || typeof address === "string") {
     throw new Error("Expected WebSocket server to listen on a TCP port");
   }
-  return { server: wss, maestroUrl: `http://127.0.0.1:${address.port}` };
+  return { server: wss, omadeusUrl: `http://127.0.0.1:${address.port}` };
 }
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -93,7 +93,7 @@ describe("createOmadeusSocketClient", () => {
     const onEvent = vi.fn();
 
     client = createOmadeusSocketClient({
-      maestroUrl: setup.maestroUrl,
+      omadeusUrl: setup.omadeusUrl,
       tokenManager,
       pathSuffix: "ws",
       logPrefix: "[test]",
@@ -115,7 +115,7 @@ describe("createOmadeusSocketClient", () => {
         socket.send(JSON.stringify(chatEvent));
       });
       client = createOmadeusSocketClient({
-        maestroUrl: setup.maestroUrl,
+        omadeusUrl: setup.omadeusUrl,
         tokenManager,
         pathSuffix: "ws",
         logPrefix: "[test]",

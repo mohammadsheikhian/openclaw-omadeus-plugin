@@ -1,5 +1,3 @@
-import type { OmadeusEnvironment } from "./defaults.js";
-
 // ---------------------------------------------------------------------------
 // Omadeus config shape (stored under channels.omadeus in OpenClaw config)
 // ---------------------------------------------------------------------------
@@ -20,7 +18,10 @@ export type OmadeusInboundPolicy = {
 
 export type OmadeusChannelConfig = {
   enabled?: boolean;
-  environment?: OmadeusEnvironment;
+  /** Omadeus CAS authentication base URL. Defaults to production. */
+  casUrl?: string;
+  /** Main Omadeus gateway base URL for Dolphin and Jaguar traffic. Defaults to production. */
+  omadeusUrl?: string;
   /**
    * Omadeus API key (sent as `Authorization: ApiToken <key>`). When set, the
    * plugin authenticates with it directly — no CAS login, no session token
@@ -32,8 +33,6 @@ export type OmadeusChannelConfig = {
   organizationId?: number;
   /** Cached Omadeus session JWT obtained during onboarding/startup. */
   sessionToken?: string;
-  /** Environment the cached sessionToken was minted under (must match `environment`). */
-  sessionTokenEnvironment?: OmadeusEnvironment;
   /**
    * ID of the OpenClaw Omadeus member, resolved during setup.
    *
@@ -54,9 +53,8 @@ export type ResolvedOmadeusAccount = {
   name?: string;
   enabled: boolean;
   config: OmadeusChannelConfig;
-  environment: OmadeusEnvironment;
   casUrl: string;
-  maestroUrl: string;
+  omadeusUrl: string;
   email: string;
   password: string;
   organizationId: number;

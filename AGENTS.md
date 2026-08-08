@@ -45,10 +45,10 @@ Upstream services (see the `omadeus` and `jaguar` repos' own `AGENTS.md` for det
   `channels.omadeus.organizationId` is load-bearing rather than cosmetic.
 - **panda / CAS** — identity. `src/auth.ts` + `src/api/auth.api.ts` exchange credentials for a
   session JWT.
-- **maestro** — the gateway host all REST and WS URLs are built from.
+- **maestro** — the main Omadeus gateway host all REST and WS URLs are built from.
 
-Environments (`src/defaults.ts`): `production`, `staging`, `dev`, `milestone`, `nightly` — each a
-`casUrl` + `maestroUrl` pair.
+Endpoints (`src/defaults.ts`): optional `casUrl` and `omadeusUrl` channel settings, with
+production defaults when omitted.
 
 ### Entry points
 

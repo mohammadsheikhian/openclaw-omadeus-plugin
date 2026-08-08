@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { OmadeusTokenManager } from "../token.js";
 
 export type OmadeusApiOptions = {
-  maestroUrl: string;
+  omadeusUrl: string;
   tokenManager: OmadeusTokenManager;
 };
 
@@ -20,7 +20,7 @@ export async function apiFetch(
 ): Promise<Response> {
   if (!opts.tokenManager.getToken()) throw new Error("Omadeus: not authenticated");
   const authorization = opts.tokenManager.authorizationHeader();
-  const url = `${opts.maestroUrl}${path}`;
+  const url = `${opts.omadeusUrl}${path}`;
   try {
     return await fetch(url, {
       ...init,

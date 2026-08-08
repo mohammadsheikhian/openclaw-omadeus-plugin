@@ -10,15 +10,13 @@
       "enabled": {
         "type": "boolean"
       },
-      "environment": {
+      "casUrl": {
         "type": "string",
-        "enum": [
-          "production",
-          "staging",
-          "dev",
-          "milestone",
-          "nightly"
-        ]
+        "format": "uri"
+      },
+      "omadeusUrl": {
+        "type": "string",
+        "format": "uri"
       },
       "apiKey": {
         "type": "string"
@@ -34,16 +32,6 @@
       },
       "sessionToken": {
         "type": "string"
-      },
-      "sessionTokenEnvironment": {
-        "type": "string",
-        "enum": [
-          "production",
-          "staging",
-          "dev",
-          "milestone",
-          "nightly"
-        ]
       },
       "openClawReferenceId": {
         "type": "number"
@@ -97,15 +85,13 @@
           "enabled": {
             "type": "boolean"
           },
-          "environment": {
+          "casUrl": {
             "type": "string",
-            "enum": [
-              "production",
-              "staging",
-              "dev",
-              "milestone",
-              "nightly"
-            ]
+            "format": "uri"
+          },
+          "omadeusUrl": {
+            "type": "string",
+            "format": "uri"
           },
           "apiKey": {
             "type": "string"
@@ -121,16 +107,6 @@
           },
           "sessionToken": {
             "type": "string"
-          },
-          "sessionTokenEnvironment": {
-            "type": "string",
-            "enum": [
-              "production",
-              "staging",
-              "dev",
-              "milestone",
-              "nightly"
-            ]
           },
           "openClawReferenceId": {
             "type": "number"
@@ -176,8 +152,13 @@
         }
       },
       "uiHints": {
-        "environment": {
-          "label": "Environment"
+        "casUrl": {
+          "label": "CAS URL",
+          "advanced": true
+        },
+        "omadeusUrl": {
+          "label": "Omadeus URL",
+          "advanced": true
         },
         "apiKey": {
           "label": "API key",
@@ -196,10 +177,6 @@
         "sessionToken": {
           "label": "Session token",
           "sensitive": true,
-          "advanced": true
-        },
-        "sessionTokenEnvironment": {
-          "label": "Session token environment",
           "advanced": true
         },
         "openClawReferenceId": {

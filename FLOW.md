@@ -39,7 +39,7 @@ OpenClaw helpers through `getOmadeusRuntime()`.
 `src/socket/socket.ts` is the shared client; `src/socket/jaguar.socket.ts` wraps it with
 `pathSuffix: "ws"` and the `[jaguar]` log prefix.
 
-- URL is `maestroUrl` with `http`→`ws`, plus `?token=<current session token>`.
+- URL is `omadeusUrl` with `http`→`ws`, plus `?token=<current session token>`.
 - If the token needs refreshing before connect, it refreshes first and retries.
 - Reconnect backoff: **2s doubling, capped at 60s**, reset on a successful open.
 - Heartbeat: sends `{"data":"keep-alive","action":"answer"}` on open, then every **30s**.
@@ -145,17 +145,16 @@ everything else fall through to the SDK's shared handling instead of reaching `h
 
 - `src/setup-core.ts` — validates input, writes `channels.omadeus`.
 - `src/setup-surface.ts` — exports `omadeusSetupWizard`.
-- `src/onboarding.ts` — the interactive wizard: environment → credentials → organization →
+- `src/onboarding.ts` — the interactive wizard: credentials → organization →
   OpenClaw member lookup.
 
 The wizard always resolves the OpenClaw bot member by the hardcoded email
 `openclaw@xeba.tech`; it is never user-selectable. Its `referenceId` is written to
-`openClawReferenceId` and is what the inbound policy compares against.
+`openClawMemberId` and is what the inbound policy compares against.
 
-Config written under `channels.omadeus`: `enabled`, `environment`, `email`, `password`,
-`organizationId`, `sessionToken`, `sessionTokenEnvironment`, `openClawReferenceId`, and
-`inbound.direct` (`enabled`, `allowedSenderReferenceIds`, and `requireMention` —
-still accepted by the schema for backwards compatibility, but no longer enforced).
+Config written under `channels.omadeus`: `enabled`, `casUrl`, `omadeusUrl`, `email`,
+`password`, `organizationId`, `sessionToken`, `openClawMemberId`, and `inbound.direct`
+(`enabled` and `requireMention`). The URL fields use production defaults when omitted.
 
 Environment variables read during setup: `OMADEUS_EMAIL`, `OMADEUS_PASSWORD`,
 `OMADEUS_ORGANIZATION_ID`.

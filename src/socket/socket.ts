@@ -2,7 +2,7 @@ import { WebSocket } from "ws";
 import type { OmadeusTokenManager } from "../token.js";
 
 export type OmadeusSocketOptions = {
-  maestroUrl: string;
+  omadeusUrl: string;
   tokenManager: OmadeusTokenManager;
   /** Path suffix for the websocket endpoint (e.g. "ws" or "dolphin-ws"). */
   pathSuffix: string;
@@ -41,7 +41,7 @@ function isClientKeepAlive(data: Record<string, unknown>): boolean {
 
 export function createOmadeusSocketClient(opts: OmadeusSocketOptions): OmadeusSocketClient {
   const {
-    maestroUrl,
+    omadeusUrl,
     tokenManager,
     pathSuffix,
     logPrefix,
@@ -60,7 +60,7 @@ export function createOmadeusSocketClient(opts: OmadeusSocketOptions): OmadeusSo
   let intentionalClose = false;
 
   function buildWsUrl(): string {
-    const base = maestroUrl.replace(/^http/, "ws");
+    const base = omadeusUrl.replace(/^http/, "ws");
     const token = tokenManager.wsToken();
     return `${base}/${pathSuffix}?token=${encodeURIComponent(token)}`;
   }

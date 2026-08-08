@@ -4,7 +4,7 @@ import type { OmadeusMessage } from "../types.js";
 import { createOmadeusSocketClient, type OmadeusSocketClient } from "./socket.js";
 
 export type JaguarSocketOptions = {
-  maestroUrl: string;
+  omadeusUrl: string;
   tokenManager: OmadeusTokenManager;
   onMessage?: (msg: OmadeusMessage) => void;
   /** Called for any non-message events (typing, presence, etc.). */
@@ -19,7 +19,7 @@ export type JaguarSocketClient = OmadeusSocketClient;
 
 export function createJaguarSocketClient(opts: JaguarSocketOptions): JaguarSocketClient {
   const {
-    maestroUrl,
+    omadeusUrl,
     tokenManager,
     onMessage,
     onOtherEvent,
@@ -30,7 +30,7 @@ export function createJaguarSocketClient(opts: JaguarSocketOptions): JaguarSocke
   } = opts;
 
   return createOmadeusSocketClient({
-    maestroUrl,
+    omadeusUrl,
     tokenManager,
     pathSuffix: "ws",
     logPrefix: "[jaguar]",

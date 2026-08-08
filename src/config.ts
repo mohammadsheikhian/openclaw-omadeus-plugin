@@ -1,8 +1,5 @@
 import { DEFAULT_ACCOUNT_ID, type OpenClawConfig } from "../runtime-api.js";
-import {
-  getOmadeusEnvironmentUrls,
-  resolveOmadeusEnvironment,
-} from "./defaults.js";
+import { resolveOmadeusUrls } from "./defaults.js";
 import type { OmadeusChannelConfig, ResolvedOmadeusAccount } from "./types.js";
 
 export function getOmadeusChannelConfig(cfg: OpenClawConfig): OmadeusChannelConfig | undefined {
@@ -39,18 +36,13 @@ export function resolveOmadeusAccount(params: {
 }): ResolvedOmadeusAccount {
   const { cfg } = params;
   const section = getOmadeusChannelConfig(cfg) ?? {};
-  const environment = resolveOmadeusEnvironment(section.environment);
-  const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
+  const { casUrl, omadeusUrl } = resolveOmadeusUrls(section);
   const envCredentials = resolveOmadeusEnvCredentials();
   const apiKey = section.apiKey?.trim() || process.env.OMADEUS_API_KEY?.trim() || "";
   const email = section.email?.trim() || envCredentials?.email || "";
   const password = section.password?.trim() || envCredentials?.password || "";
   const orgId = section.organizationId ?? envCredentials?.organizationId;
-  const rawSessionToken = section.sessionToken?.trim() ?? "";
-  const sessionTokenEnvironment = resolveOmadeusEnvironment(section.sessionTokenEnvironment);
-  const sessionTokenValid =
-    Boolean(rawSessionToken) && sessionTokenEnvironment === environment;
-  const sessionToken = sessionTokenValid ? rawSessionToken : "";
+  const sessionToken = section.sessionToken?.trim() ?? "";
   const hasCredentials = Boolean(email && password && orgId);
   const hasSessionToken = Boolean(sessionToken);
   const hasConfigCredentials = Boolean(
@@ -71,9 +63,8 @@ export function resolveOmadeusAccount(params: {
     name: "Omadeus",
     enabled: section.enabled !== false,
     config: section,
-    environment,
     casUrl,
-    maestroUrl,
+    omadeusUrl,
     email,
     password,
     organizationId: orgId ?? 0,

@@ -52,7 +52,7 @@ export function createApiKeyTokenManager(apiKey: string): OmadeusTokenManager {
 
 export function createTokenManager(params: {
   casUrl: string;
-  maestroUrl: string;
+  omadeusUrl: string;
   email: string;
   password: string;
   organizationId: number;
@@ -60,7 +60,7 @@ export function createTokenManager(params: {
   onRefresh?: (token: string) => void;
   onError?: (error: Error) => void;
 }): OmadeusTokenManager {
-  const { casUrl, maestroUrl, email, password, organizationId, initialToken, onRefresh, onError } =
+  const { casUrl, omadeusUrl, email, password, organizationId, initialToken, onRefresh, onError } =
     params;
 
   let currentToken = "";
@@ -84,7 +84,7 @@ export function createTokenManager(params: {
     }
     const { dolphinToken, payload } = await authenticate({
       casUrl,
-      maestroUrl,
+      omadeusUrl,
       email,
       password,
       organizationId,

@@ -45,9 +45,8 @@ describe("resolveOmadeusAccount", () => {
     expect(account.email).toBe("user@example.com");
     expect(account.password).toBe("secret");
     expect(account.organizationId).toBe(123);
-    expect(account.environment).toBe("dev");
-    expect(account.casUrl).toBe("https://dev-cas.rouztech.com");
-    expect(account.maestroUrl).toBe("https://dev-maestro.rouztech.com");
+    expect(account.casUrl).toBe("https://xas.xeba.tech");
+    expect(account.omadeusUrl).toBe("https://maestro.xeba.tech");
   });
 
   it("prefers config credentials over env credentials", () => {
@@ -74,50 +73,45 @@ describe("resolveOmadeusAccount", () => {
     expect(account.organizationId).toBe(456);
   });
 
-  it("derives production URLs from environment", () => {
+  it("uses production URLs when explicit URLs are omitted", () => {
     const account = resolveOmadeusAccount({
       cfg: {
         channels: {
           omadeus: {
             enabled: true,
-            environment: "production",
           },
         },
       },
     });
 
-    expect(account.environment).toBe("production");
     expect(account.casUrl).toBe("https://xas.xeba.tech");
-    expect(account.maestroUrl).toBe("https://maestro.xeba.tech");
+    expect(account.omadeusUrl).toBe("https://maestro.xeba.tech");
   });
 
-  it("ignores sessionToken when sessionTokenEnvironment does not match environment", () => {
+  it("uses explicit URL overrides", () => {
     const account = resolveOmadeusAccount({
       cfg: {
         channels: {
           omadeus: {
             enabled: true,
-            environment: "production",
-            sessionToken: "cached-token",
-            sessionTokenEnvironment: "dev",
+            casUrl: "https://cas.example.test",
+            omadeusUrl: "https://omadeus.example.test",
           },
         },
       },
     });
 
-    expect(account.sessionToken).toBeUndefined();
-    expect(account.credentialSource).toBe("none");
+    expect(account.casUrl).toBe("https://cas.example.test");
+    expect(account.omadeusUrl).toBe("https://omadeus.example.test");
   });
 
-  it("honors sessionToken when sessionTokenEnvironment matches environment", () => {
+  it("uses a stored session token without environment metadata", () => {
     const account = resolveOmadeusAccount({
       cfg: {
         channels: {
           omadeus: {
             enabled: true,
-            environment: "staging",
             sessionToken: "cached-token",
-            sessionTokenEnvironment: "staging",
           },
         },
       },
@@ -125,5 +119,27 @@ describe("resolveOmadeusAccount", () => {
 
     expect(account.sessionToken).toBe("cached-token");
     expect(account.credentialSource).toBe("session");
+  });
+
+  it("keeps hosted API-key runtime configuration password-free", () => {
+    const account = resolveOmadeusAccount({
+      cfg: {
+        channels: {
+          omadeus: {
+            enabled: true,
+            organizationId: 123,
+            apiKey: "hosted-key",
+            openClawMemberId: 456,
+          },
+        },
+      },
+    });
+
+    expect(account.credentialSource).toBe("apikey");
+    expect(account.apiKey).toBe("hosted-key");
+    expect(account.email).toBe("");
+    expect(account.password).toBe("");
+    expect(account.casUrl).toBe("https://xas.xeba.tech");
+    expect(account.omadeusUrl).toBe("https://maestro.xeba.tech");
   });
 });
