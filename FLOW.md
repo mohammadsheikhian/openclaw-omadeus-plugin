@@ -20,142 +20,103 @@ OpenClaw helpers through `getOmadeusRuntime()`.
 
 ## 2. Gateway startup
 
-`gateway.startAccount` in `src/channel.ts`:
+`gateway.startAccount` in `src/channel.ts` checks two things and then opens a session. Any
+failure sets `lastError` on the account status and returns — the channel does not start
+half-configured.
 
-1. Resolve the account (`src/config.ts`). Bail out if credentials are missing.
-2. Create the token manager (`src/token.ts`) and authenticate (`src/auth.ts` → CAS/panda).
-   The manager auto-refreshes **5 minutes before expiry**.
-3. Persist a refreshed session token back to `channels.omadeus.sessionToken` (skipped when
-   unchanged, so config writes stay quiet).
-4. Create the `SentMessageTracker` and the inbound handler
-   (`createOmadeusMessageHandler`).
-5. Create and connect the Jaguar WebSocket client.
-6. Publish `tokenManager` / `jaguar` / `sentTracker` into module-level `gatewayState` so
-   outbound actions can reach them.
-7. Stay alive until OpenClaw aborts, then stop refresh and disconnect the socket.
+1. **Resolve the account** (`src/config.ts`). Exactly two credential shapes are accepted:
+   `apiKey`, or `email` + `password` + `organizationId`. Config is the only source.
+2. **Require `openClawMemberId`.** Without it the channel cannot recognise its own replies, so
+   it refuses to start rather than risk answering itself.
 
-## 3. The socket
+`openOmadeusSession` (`src/session.ts`) does the rest, in order. Each step proves the one
+before it, and anything already opened is released before an error leaves the function:
 
-`src/socket/socket.ts` is the shared client; `src/socket/jaguar.socket.ts` wraps it with
-`pathSuffix: "ws"` and the `[jaguar]` log prefix.
+3. **Open the credential** — `openOmadeusToken` (`src/token.ts`):
+   - `apiKey` → static, nothing to refresh.
+   - password → CAS login through `src/auth.ts`, then auto-refresh **5 minutes before expiry**.
+     The token lives in memory only and is never written back to config.
+   It resolves only once the credential works, so a bad password fails here.
+4. **Pin the room** (`src/room.ts`) via `GET /jaguar/apiv1/directs/openclaw_bot`. Jaguar
+   resolves the DM from the authenticated member, so no room id is ever guessed. It verifies
+   `openClawMemberId` is really a member of that room. 5xx and network errors retry; 401/404
+   and a member mismatch fail immediately.
+5. **Create the inbound handler** (`src/handler.ts`) bound to that room id.
+6. **Connect the socket** (`src/socket/socket.ts`) to `wss://<maestro>/ws?token=…`.
+7. On the first connection transition, report `openclawStatus: "connected"` to Dolphin
+   (fire-and-forget). Until this lands, Jaguar routes the DM to its own setup assistant and
+   refuses `asOpenclaw`.
 
-- URL is `maestroUrl` with `http`→`ws`, plus `?token=<current session token>`.
-- If the token needs refreshing before connect, it refreshes first and retries.
-- Reconnect backoff: **2s doubling, capped at 60s**, reset on a successful open.
-- Heartbeat: sends `{"data":"keep-alive","action":"answer"}` on open, then every **30s**.
-  Any inbound frame resets the miss counter; a server `heartbeat` ping is answered
-  immediately. After **5** unanswered sends the socket closes so reconnect can take over.
-- Keep-alive frames are consumed internally and never surface as events.
+`startAccount` holds the resulting session in `activeSession` and waits on the abort signal.
+Teardown is `session.close()`: disconnect the socket, release the credential.
 
-Every other frame is JSON-parsed and passed to `onEvent`, where
-`isOmadeusMessage(data)` (`type === "message"`, numeric `roomId`, string `body`) splits chat
-messages from everything else. Non-messages are logged and discarded.
+## 3. Inbound: frame → agent turn
 
-## 4. Inbound: frame → agent turn
-
-```text
-socket frame
-  └─ isOmadeusMessage?                      src/socket/jaguar.socket.ts
-      └─ sentTracker.isEcho()?  ─── yes ──▶ drop (our own message echoing back)
-          └─ parseJaguarMessage()           src/inbound.ts
-              └─ handleOmadeusMessage()     src/message-handler.ts
+```
+Jaguar WS frame
+  └─ heartbeat.observe    keep-alive? handle and return. either way, we are alive
+     └─ isOmadeusMessage  chat frame, or some other event we ignore?
+        └─ parseJaguarMessage   normalize; strip a leading **@mention**; drop removed
+           └─ admitOmadeusMessage
+                ├─ roomId !== pinned      → drop "other_room"      (logged at info)
+                ├─ sender === openClaw    → drop "openclaw_authored" (our echo)
+                └─ admitted
+                   └─ debouncer.enqueue
 ```
 
-`parseJaguarMessage` drops removed messages and empty bodies, detects mentions (from
-`details.rawMessage` tokens like `{user_reference_id:123}` and from leading bold mention
-text), and strips the mention prefix before the agent sees the body.
+The debouncer groups messages sent in quick succession into one turn, joining their bodies
+with newlines and acknowledging every source message. On flush:
 
-From there, `src/message-handler.ts` runs this order — note that **debounce comes first**:
+1. **No usable text?** (attachment-only, or a bare mention) — mark seen, reply "I can only read
+   text messages", stop. This is only reachable after admission, so it never fires in a room
+   the channel does not serve.
+2. **Mark seen** — `SEE /jaguar/apiv1/messages/:id` with `asOpenclaw: true`, fire-and-forget.
+   Sent at dispatch time, matching the declared `after_agent_dispatch` ack policy.
+3. **Resolve the route** — `core.channel.routing.resolveAgentRoute` with a direct peer, giving
+   the agent id, account id, and session key.
+4. **Build the turn** (`src/turn.ts`) — the reply target (`room:<id>`), the preview, the system
+   event text and key, and the full context payload, as one value.
+5. **Enqueue a system event** so the turn shows up in OpenClaw's activity.
+6. **Build the delivery adapter** (`src/reply.ts`).
+7. **Run the turn** — `core.channel.inbound.run` with an adapter that ingests the message and
+   hands the turn context to `core.channel.inbound.buildContext`.
 
-1. **Debounce** — `inboundDebouncer.enqueue(...)`, keyed by `omadeus:<roomId>:<senderId>`.
-   Control commands and empty bodies bypass debouncing. When several messages flush together
-   their bodies are joined with newlines and all their ids are acknowledged.
-2. **Resolve the DM counterparty** — `src/direct-resolver.ts` looks up who this direct room is
-   *with* (cached per room; falls back to a full list once). Transient API failures are
-   retried with a short backoff before giving up; a real outage fails closed. Admission
-   depends on this, not on the sender.
-3. **Inbound policy** — `src/inbound-policy.ts`. Drops with a reason, logged at `info`:
-   `not_direct_room`, `direct_disabled`, `direct_openclaw_authored`,
-   `direct_not_openclaw_room`. `requireMention` is not enforced — see AGENTS.md.
-4. **Control-command gate** — `resolveControlCommandGate(...)` with an explicit authorizer,
-   since the only room served is the operator's own DM.
-5. **Text check** — an admitted message with no usable text (attachment-only, bare mention)
-   is acknowledged and answered with a short "text only" reply, then the turn ends. This runs
-   *after* admission so it can never fire in another room.
-6. **Acknowledge** — `seeMessage(...)` marks the source message(s) read, fire-and-forget.
-   Sent with `asOpenclaw: true`, so Jaguar records the receipt against the OpenClaw bot
-   rather than the operator (whose own message it is).
-7. **Route** — `resolveAgentRoute({ peer: { kind: "direct", id: senderId } })` yields
-   `sessionKey` / `agentId` / `accountId`.
-8. **System event** — a one-line preview is queued for the agent's ambient context.
-9. **Dispatch** — `core.channel.inbound.run(...)` with an `{ ingest, resolveTurn }` adapter.
+## 4. Outbound: reply → room
 
-The turn kernel then owns ingest → classify → preflight → resolve → record → dispatch →
-finalize. `resolveTurn` builds the context via `core.channel.inbound.buildContext(...)` and
-returns the assembled turn, including the delivery adapter from `src/reply-dispatcher.ts`.
+All Omadeus REST goes through `src/utils/http.util.ts`, which decodes the body or raises
+`OmadeusHttpError` carrying a status — there is no other error convention.
 
-`messageId` carries the Jaguar message id into the context as `MessageSid`.
+`src/reply.ts` returns a `delivery` whose `deliver` chunks the text
+(`chunkTextWithMode`, 4000 chars, markdown-aware) and posts each chunk through
+`sendOmadeusMessage` → `SEND /jaguar/apiv1/rooms/:id/messages` with `asOpenclaw: true`.
 
-## 5. Reply → room
+`replyOptions.sourceReplyDeliveryMode` is forced to `"automatic"` when
+`messages.visibleReplies` is unset, so harnesses that only deliver via the message tool still
+get their final text out. An explicit operator setting is never overridden.
 
-`createOmadeusTurnDelivery` (`src/reply-dispatcher.ts`) supplies three things to the kernel:
+Every one of those sends echoes straight back over the socket — authored by the OpenClaw bot,
+and therefore dropped at admission. That is the whole echo-suppression design.
 
-- **`delivery`** — `durable()` names the target room; `deliver(payload)` chunks the text
-  (`resolveTextChunkLimit`, 4000 default, markdown-aware) and sends each chunk.
-- **`dispatcherOptions`** — the response prefix context.
-- **`replyOptions`** — `onModelSelected`, plus `sourceReplyDeliveryMode: "automatic"` when
-  `messages.visibleReplies` is unset. (See the `visibleReplies` gotcha in AGENTS.md — this is
-  what stops replies from silently vanishing on tool-shy models.)
+## 5. Proactive sends (message tool)
 
-The kernel owns the dispatcher lifecycle: typing indicators, block buffering, settle, and
-error handling.
+`message(action=send)` goes through `actions.prepareSendPayload` onto core's durable send path
+(persist, retry, recover, ack), landing in the outbound adapter. There is no target to resolve:
+one room is served, so `resolveTarget` always returns the session's pinned id and any target the agent
+supplied is discarded. `handleAction`'s `send` branch is the fallback for paths that bypass the
+durable route.
 
-## 6. Outbound send
+## 6. Setup (self-hosted only)
 
-All sends converge on `sendOmadeusText` in `src/channel.ts`, then:
+`openclaw setup omadeus` runs `omadeusSetupWizard` (`src/onboarding.ts`), a single linear path:
 
-```text
-sendOmadeusMessage()                    src/outbound.ts
-  ├─ generateTemporaryId()
-  ├─ sentTracker.trackOutbound(...)     BEFORE the HTTP call — the echo can beat the response
-  ├─ sendRoomMessage()                  POST /jaguar/apiv1/rooms/:id/messages
-  └─ sentTracker.trackId(result.id)
-```
+1. Email and password.
+2. Organization — listed from `LIST /dolphin/apiv1/organizations` by email, picked from a menu.
+3. Authenticate; on failure, offer to re-enter and try again.
+4. `GET /jaguar/apiv1/directs/openclaw_bot` → the OpenClaw member is whichever member of that
+   DM is not us. Nothing is hardcoded.
+5. `POST /dolphin/apiv1/settings/bots/openclaw` with `connecting`.
+6. Write `channels.omadeus`: `enabled`, `casUrl`, `omadeusUrl`, `email`, `password`,
+   `organizationId`, `openClawMemberId`.
 
-Two callers reach it:
-
-- The **message adapter** (`plugin.message`, built with
-  `createChannelMessageAdapterFromOutbound`) — core's durable send path, used by
-  `message(action=send)` via `actions.prepareSendPayload`.
-- The **outbound adapter** (`plugin.outbound`) — the reply path and other core delivery.
-
-`actions.handleAction`'s `send` branch remains as a fallback for paths that bypass
-`prepareSendPayload`.
-
-Targets are room ids only: `room:123` or `123`. `outbound.resolveTarget` and
-`messaging.targetResolver` both reject anything else.
-
-## 7. Message actions
-
-`actions.describeMessageTool` advertises exactly one action — `send` — when the channel is
-enabled and configured. `supportsAction` claims only that; `edit`, `delete`, `react`, and
-everything else fall through to the SDK's shared handling instead of reaching `handleAction`.
-
-## 8. Setup
-
-- `src/setup-core.ts` — validates input, writes `channels.omadeus`.
-- `src/setup-surface.ts` — exports `omadeusSetupWizard`.
-- `src/onboarding.ts` — the interactive wizard: environment → credentials → organization →
-  OpenClaw member lookup.
-
-The wizard always resolves the OpenClaw bot member by the hardcoded email
-`openclaw@xeba.tech`; it is never user-selectable. Its `referenceId` is written to
-`openClawReferenceId` and is what the inbound policy compares against.
-
-Config written under `channels.omadeus`: `enabled`, `environment`, `email`, `password`,
-`organizationId`, `sessionToken`, `sessionTokenEnvironment`, `openClawReferenceId`, and
-`inbound.direct` (`enabled`, `allowedSenderReferenceIds`, and `requireMention` —
-still accepted by the schema for backwards compatibility, but no longer enforced).
-
-Environment variables read during setup: `OMADEUS_EMAIL`, `OMADEUS_PASSWORD`,
-`OMADEUS_ORGANIZATION_ID`.
+Hosted instances never run this. Their config is rendered by eagle before the gateway starts,
+and they boot with `OPENCLAW_SKIP_ONBOARDING=1`.

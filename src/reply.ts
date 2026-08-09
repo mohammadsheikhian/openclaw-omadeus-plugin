@@ -4,35 +4,26 @@ import {
   type ReplyPayload,
   type RuntimeEnv,
 } from "../runtime-api.js";
-import { sendOmadeusMessage, type OutboundDeps } from "./outbound.js";
+import { sendOmadeusMessage } from "./outbound.js";
 import { getOmadeusRuntime } from "./runtime.js";
-
-type Log = {
-  info: (msg: string) => void;
-  warn: (msg: string) => void;
-  error: (msg: string, extra?: Record<string, unknown>) => void;
-  debug?: (msg: string) => void;
-};
-
-export type CreateOmadeusTurnDeliveryParams = {
-  cfg: OpenClawConfig;
-  agentId: string;
-  accountId?: string;
-  runtime: RuntimeEnv;
-  log: Log;
-  outboundDeps: OutboundDeps;
-  roomId: string;
-};
+import type { OmadeusApiOptions } from "./utils/http.util.js";
 
 /**
  * Builds the delivery adapter plus dispatcher/reply options for one Omadeus turn.
  *
- * The channel turn kernel owns the dispatcher lifecycle (typing, buffering, settle), so this
- * only has to describe how an Omadeus room is written to.
+ * The channel turn kernel owns the dispatcher lifecycle (typing, buffering,
+ * settle), so this only has to describe how the room is written to.
  */
-export function createOmadeusTurnDelivery(params: CreateOmadeusTurnDeliveryParams) {
+export function createOmadeusTurnDelivery(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  accountId?: string;
+  runtime: RuntimeEnv;
+  apiOpts: OmadeusApiOptions;
+  roomId: number;
+}) {
   const core = getOmadeusRuntime();
-  const { cfg, agentId, roomId, accountId } = params;
+  const { cfg, agentId, roomId, accountId, apiOpts } = params;
 
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
   const textChunkLimit = core.channel.text.resolveTextChunkLimit(cfg, "omadeus", accountId, {
@@ -59,7 +50,7 @@ export function createOmadeusTurnDelivery(params: CreateOmadeusTurnDeliveryParam
 
         const chunks = core.channel.text.chunkTextWithMode(text, textChunkLimit, chunkMode);
         for (const chunk of chunks) {
-          await sendOmadeusMessage(params.outboundDeps, { to: String(roomId), text: chunk });
+          await sendOmadeusMessage(apiOpts, { roomId, text: chunk });
         }
         return { visibleReplySent: true };
       },
