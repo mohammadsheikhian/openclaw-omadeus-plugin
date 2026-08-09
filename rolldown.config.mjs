@@ -5,7 +5,7 @@ const external = (id) =>
   id.startsWith("node:");
 
 export default {
-  input: ["index.ts", "setup-entry.ts", "api.ts", "runtime-api.ts"],
+  input: ["index.ts", "setup-entry.ts", "runtime-api.ts"],
   external,
   platform: "node",
   treeshake: false,

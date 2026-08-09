@@ -1,9 +1,5 @@
-import {
-  createTopLevelChannelConfigAdapter,
-} from "openclaw/plugin-sdk/channel-config-helpers";
-import {
-  type ChannelStatusIssue,
-} from "openclaw/plugin-sdk/channel-runtime";
+import { createTopLevelChannelConfigAdapter } from "openclaw/plugin-sdk/channel-config-helpers";
+import { type ChannelStatusIssue } from "openclaw/plugin-sdk/channel-runtime";
 import { createAttachedChannelResultAdapter } from "openclaw/plugin-sdk/channel-send-result";
 import { buildComputedAccountStatusSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import {
@@ -13,76 +9,33 @@ import {
 import {
   createChannelMessageAdapterFromOutbound,
   DEFAULT_ACCOUNT_ID,
-  missingTargetError,
   type ChannelPlugin,
   type OpenClawConfig,
 } from "../runtime-api.js";
-import { generateTemporaryId } from "./utils/http.util.js";
-import { configureOpenClawBot, verifyApiKey } from "./api/auth.api.js";
 import {
   getOmadeusChannelConfig,
   listOmadeusAccountIds,
   resolveDefaultOmadeusAccountId,
   resolveOmadeusAccount,
-  resolveOpenClawMemberId,
 } from "./config.js";
-import { parseJaguarMessage } from "./inbound.js";
-import { createOmadeusMessageHandler } from "./message-handler.js";
-import { sendOmadeusMessage, type OutboundDeps } from "./outbound.js";
+import { omadeusSetupWizard } from "./onboarding.js";
 import { getOmadeusRuntime } from "./runtime.js";
-import { SentMessageTracker } from "./sent-message-tracker.js";
-import { omadeusSetupAdapter } from "./setup-core.js";
-import { omadeusSetupWizard } from "./setup-surface.js";
-import { createJaguarSocketClient, type JaguarSocketClient } from "./socket/jaguar.socket.js";
-import {
-  createApiKeyTokenManager,
-  createTokenManager,
-  type OmadeusTokenManager,
-} from "./token.js";
-import type { ResolvedOmadeusAccount as Account } from "./types.js";
+import { openOmadeusSession, type OmadeusSession } from "./session.js";
+import type { OmadeusLog, ResolvedOmadeusAccount as Account } from "./types.js";
 
 const CHANNEL_ID = "omadeus" as const;
 
-const gatewayState: {
-  tokenManager: OmadeusTokenManager | null;
-  jaguar: JaguarSocketClient | null;
-  sentTracker: SentMessageTracker | null;
-} = { tokenManager: null, jaguar: null, sentTracker: null };
+/**
+ * The running gateway, or `null`.
+ *
+ * One member is enough: everything a caller needs from a live connection is on
+ * the session's own interface. A singleton is correct here — an Omadeus gateway
+ * serves exactly one member's DM — but it is now a singleton *of a module*
+ * rather than a bag of fields three call sites reach into.
+ */
+let activeSession: OmadeusSession | null = null;
 
 const isUnconfigured = (account: Account) => account.credentialSource === "none";
-
-let lastPersistedToken: string | null = null;
-
-async function persistSessionToken(
-  token: string,
-  environment: Account["environment"],
-): Promise<void> {
-  if (lastPersistedToken === token) return;
-  const runtime = getOmadeusRuntime();
-  const cfg = runtime.config.current() as OpenClawConfig;
-  const section = getOmadeusChannelConfig(cfg) ?? {};
-  if (section.sessionToken === token && section.sessionTokenEnvironment === environment) {
-    lastPersistedToken = token;
-    return;
-  }
-  await runtime.config.mutateConfigFile({
-    afterWrite: { mode: "auto" },
-    mutate: (draft) => {
-      draft.channels = {
-        ...(draft.channels ?? {}),
-        omadeus: {
-          ...(getOmadeusChannelConfig(draft) ?? {}),
-          sessionToken: token,
-          sessionTokenEnvironment: environment,
-        },
-      };
-    },
-  });
-  lastPersistedToken = token;
-}
-
-/** Actions `handleAction` implements; anything else falls back to the shared SDK path. */
-const OMADEUS_MESSAGE_ACTIONS = new Set(["send"]);
 
 function actionError(text: string, error = text) {
   return {
@@ -94,9 +47,41 @@ function actionError(text: string, error = text) {
 
 function actionOk(payload: Record<string, unknown>) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify({ ok: true, channel: CHANNEL_ID, ...payload }) }],
+    content: [
+      { type: "text" as const, text: JSON.stringify({ ok: true, channel: CHANNEL_ID, ...payload }) },
+    ],
     details: { ok: true, channel: CHANNEL_ID, ...payload },
   };
+}
+
+/** Trim, drop empties, dedupe — mirrors the SDK's own string normalization. */
+export function normalizeAllowFromEntries(allowFrom: readonly (string | number)[]): string[] {
+  const seen: string[] = [];
+  for (const entry of allowFrom) {
+    const trimmed = String(entry ?? "").trim();
+    if (trimmed && !seen.includes(trimmed)) seen.push(trimmed);
+  }
+  return seen;
+}
+
+function readStringParam(params: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** The running session, or an explanation of why there isn't one. */
+function requireSession(): OmadeusSession {
+  if (!activeSession) {
+    throw new Error("Omadeus: not connected. Is the gateway running with Omadeus enabled?");
+  }
+  return activeSession;
+}
+
+async function sendOmadeusText(text: string): Promise<{ messageId: string }> {
+  return await requireSession().send(text);
 }
 
 const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
@@ -106,20 +91,26 @@ const omadeusConfigAdapter = createTopLevelChannelConfigAdapter<Account>({
   defaultAccountId: resolveDefaultOmadeusAccountId,
   deleteMode: "clear-fields",
   clearBaseFields: [
-    "environment",
+    "apiKey",
     "email",
     "password",
     "organizationId",
-    "sessionToken",
-    "sessionTokenEnvironment",
-    "apiKey",
     "openClawMemberId",
-    "openClawReferenceId",
-    "inbound",
+    "casUrl",
+    "omadeusUrl",
   ],
-  // Keep adapter contract satisfied even though Omadeus no longer uses DM allowlists.
+  // This channel has no sender allowlist — the room is the allowlist — so
+  // there is nothing to resolve.
   resolveAllowFrom: () => [],
-  formatAllowFrom: () => [],
+  // Must pass values through. The SDK runs BOTH `commands.ownerAllowFrom` and
+  // the inbound sender id through this one function
+  // (`formatAllowFromList` / `normalizeAllowFromEntry`), then matches the two
+  // lists against each other. A stub returning `[]` blanks both sides, so no
+  // sender can ever match an owner, `senderIsOwner` stays false, and every
+  // owner-only tool — `cron` among them — is silently stripped from the agent.
+  // Omadeus senders are plain member reference ids, so trimming is all the
+  // normalization they need.
+  formatAllowFrom: (allowFrom) => normalizeAllowFromEntries(allowFrom),
 });
 
 const defaultRuntimeState = {
@@ -132,59 +123,20 @@ const defaultRuntimeState = {
   lastInboundAt: null,
   lastOutboundAt: null,
   lastError: null,
-} as const;
-
-/** Normalize Jaguar chat target: `room:123` or `123` -> `123` (numeric room id for APIs). */
-function normalizeOmadeusRoomId(raw: string): string | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const prefixed = /^room:(\d+)$/i.exec(trimmed);
-  if (prefixed) {
-    return prefixed[1];
-  }
-  return /^\d+$/.test(trimmed) ? trimmed : undefined;
-}
-
-function readStringParam(params: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = params[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-/** Single outbound send path shared by the outbound adapter and the message adapter. */
-async function sendOmadeusText(params: {
-  cfg: OpenClawConfig;
-  to: string;
-  text: string;
-}): Promise<{ channel: string; messageId: string; chatId: string }> {
-  if (!gatewayState.jaguar || !gatewayState.tokenManager) {
-    throw new Error("Omadeus: not connected. Is the gateway running with Omadeus enabled?");
-  }
-  const deps: OutboundDeps = {
-    apiOpts: {
-      maestroUrl: resolveOmadeusAccount({ cfg: params.cfg }).maestroUrl,
-      tokenManager: gatewayState.tokenManager,
-    },
-    sentTracker: gatewayState.sentTracker ?? undefined,
-  };
-  return await sendOmadeusMessage(deps, { to: params.to, text: params.text });
-}
+};
 
 export const omadeusPlugin: ChannelPlugin<Account> = {
-  id: "omadeus",
+  id: CHANNEL_ID,
   meta: {
-    id: "omadeus",
+    id: CHANNEL_ID,
     label: "Omadeus",
     selectionLabel: "Omadeus (API + WebSocket)",
-    docsPath: "",
-    docsLabel: "",
-    blurb: "AI-native project management that knows your role, speaks your language, and keeps your team in sync. No noise.",
+    // Empty values make the gateway log "registered incomplete metadata" on
+    // every boot and fill them in itself.
+    docsPath: "https://github.com/brantrusnak/openclaw-omadeus-plugin#readme",
+    docsLabel: "Omadeus plugin docs",
+    blurb:
+      "AI-native project management that knows your role, speaks your language, and keeps your team in sync. No noise.",
   },
   capabilities: {
     chatTypes: ["direct"],
@@ -196,10 +148,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
   },
   agentPrompt: {
     messageToolHints: () => [
-      "- Omadeus routing: **send** uses the **room id** of this DM (`to` / `target`, e.g. `room:117947` or `117947`).",
-      "- This channel only serves the OpenClaw direct room. There are no group, channel, or entity rooms to target.",
-      "- `session_status` / SessionKey: **OpenClaw** gateway only. Use the inbound SessionKey or \"current\" — never a fake `task/<...>` string from a title.",
-      "- Reply in chat with plain text; use the message tool only for proactive sends.",
+      "- Omadeus: reply in chat with plain text. The message tool is only for proactive sends, and it always goes to this one DM — there is no target to choose.",
     ],
   },
   actions: {
@@ -207,75 +156,36 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       const enabled =
         cfg.channels?.omadeus?.enabled !== false &&
         !isUnconfigured(resolveOmadeusAccount({ cfg }));
-      return {
-        actions: enabled ? ["send"] : [],
-        capabilities: [],
-        schema: null,
-      };
+      return { actions: enabled ? ["send"] : [], capabilities: [], schema: null };
     },
-    supportsAction: ({ action }) => OMADEUS_MESSAGE_ACTIONS.has(action),
+    supportsAction: ({ action }) => action === "send",
     /**
-     * Routes `message(action=send)` onto core's durable send path (persist, retry, recover,
-     * ack) via the outbound adapter, instead of the legacy plugin-owned `handleAction` path.
+     * Routes `message(action=send)` onto core's durable send path (persist,
+     * retry, recover, ack) via the outbound adapter.
      */
     prepareSendPayload: ({ ctx, payload }) => (ctx.action === "send" ? payload : null),
     handleAction: async (ctx) => {
-      const account = resolveOmadeusAccount({ cfg: ctx.cfg });
-      const apiOpts = () => {
-        if (!gatewayState.tokenManager) {
-          throw new Error("Omadeus: not connected; gateway must be running with Omadeus enabled.");
-        }
-        return { maestroUrl: account.maestroUrl, tokenManager: gatewayState.tokenManager };
-      };
-
-      // Plain text send. Harnesses whose `sourceVisibleReplies` default is `message_tool`
-      // (Codex, for example) never auto-deliver the final text — they call the message tool
-      // instead, so this path is the only way their replies reach the room.
-      if (ctx.action === "send") {
-        if (!gatewayState.jaguar) {
-          return actionError("Omadeus: not connected. Is the gateway running with Omadeus enabled?");
-        }
-        const text = readStringParam(ctx.params, ["message", "text", "body"]);
-        if (!text) {
-          return actionError("Omadeus send requires `message`.", "Missing message.");
-        }
-
-        const rawTarget = readStringParam(ctx.params, ["to", "target", "chatId", "chat_id", "roomId"]);
-        if (!rawTarget) {
-          return actionError(
-            "Omadeus send requires a target: room:<roomId> or a numeric room id.",
-            "Missing target.",
-          );
-        }
-
-        const roomId = normalizeOmadeusRoomId(rawTarget);
-        if (!roomId) {
-          return actionError(
-            `Omadeus send could not resolve target \`${rawTarget}\`. Use room:<roomId> or a numeric room id.`,
-            "Unresolved target.",
-          );
-        }
-
-        try {
-          const sent = await sendOmadeusMessage(
-            {
-              apiOpts: apiOpts(),
-              sentTracker: gatewayState.sentTracker ?? undefined,
-            },
-            { to: roomId, text },
-          );
-          return actionOk({ action: "send", messageId: sent.messageId, chatId: sent.chatId });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return actionError(msg);
-        }
+      if (ctx.action !== "send") {
+        throw new Error(`Unhandled Omadeus action: ${String(ctx.action)}`);
       }
 
-      throw new Error(`Unhandled Omadeus action: ${String(ctx.action)}`);
+      // Fallback for harnesses whose `sourceVisibleReplies` default is
+      // `message_tool` (Codex): they never auto-deliver final text, so this is
+      // the only way their replies reach the room.
+      const text = readStringParam(ctx.params, ["message", "text", "body"]);
+      if (!text) {
+        return actionError("Omadeus send requires `message`.", "Missing message.");
+      }
+
+      try {
+        const sent = await sendOmadeusText(text);
+        return actionOk({ action: "send", messageId: sent.messageId });
+      } catch (err) {
+        return actionError(err instanceof Error ? err.message : String(err));
+      }
     },
   },
   reload: { configPrefixes: ["channels.omadeus"] },
-  setup: omadeusSetupAdapter,
   setupWizard: omadeusSetupWizard,
 
   config: {
@@ -290,33 +200,8 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
       enabled: account.enabled,
       configured: !isUnconfigured(account),
       credentialSource: account.credentialSource,
-      baseUrl: account.maestroUrl,
+      baseUrl: account.omadeusUrl,
     }),
-  },
-
-  // Used by shared message-tool target resolution.
-  messaging: {
-    targetResolver: {
-      hint: "Use room:<roomId> (matches OpenClaw OriginatingTo) or a numeric Jaguar room id.",
-      looksLikeId: (raw) => {
-        const t = raw.trim();
-        return /^room:\d+$/i.test(t) || /^\d+$/.test(t);
-      },
-      resolveTarget: async ({ input }) => {
-        const id = normalizeOmadeusRoomId(input);
-        if (!id) {
-          return null;
-        }
-        return {
-          to: id,
-          // "user" keeps the outbound session route a direct peer, matching the inbound
-          // direct route. "group" here is what produced stray omadeus:group:<room> sessions.
-          kind: "user" as const,
-          display: `room:${id}`,
-          source: "normalized" as const,
-        };
-      },
-    },
   },
 
   /**
@@ -326,23 +211,16 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
    * `progressUpdates`, `previewFinalization`) are *declarations* — the shape carries no
    * implementation hook — and the machinery that edits a streaming draft in place lives in
    * each channel's own outbound builder, not in the shared SDK. Declaring them here would
-   * advertise a capability nothing backs. See the note in CLAUDE.md before adding them.
+   * advertise a capability nothing backs. See the note in AGENTS.md before adding them.
    */
   message: createChannelMessageAdapterFromOutbound<OpenClawConfig>({
     id: CHANNEL_ID,
     outbound: {
-      sendText: async (ctx) => {
-        const sent = await sendOmadeusText({
-          cfg: ctx.cfg as OpenClawConfig,
-          to: ctx.to,
-          text: ctx.text,
-        });
-        return { messageId: sent.messageId };
-      },
+      sendText: async (ctx) => await sendOmadeusText(ctx.text),
     },
     receive: {
       // Jaguar read receipts are sent once the message reaches the agent, matching the
-      // markMessagesSeen call the handler already makes at that point.
+      // markSeen call the handler already makes at that point.
       defaultAckPolicy: "after_agent_dispatch",
       supportedAckPolicies: ["after_receive_record", "after_agent_dispatch"],
     },
@@ -355,18 +233,16 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
     chunkerMode: "markdown",
     ...createAttachedChannelResultAdapter({
       channel: CHANNEL_ID,
-      sendText: async ({ cfg, to, text }) => await sendOmadeusText({ cfg, to, text }),
+      sendText: async ({ text }) => await sendOmadeusText(text),
     }),
-    resolveTarget: ({ to }) => {
-      const trimmed = to?.trim() ?? "";
-      const id = normalizeOmadeusRoomId(trimmed);
-      if (!id) {
-        return {
-          ok: false,
-          error: missingTargetError("Omadeus", "room:<roomId> or numeric room id"),
-        };
+    // One room, so any target resolves to it. Whatever the caller passed is
+    // discarded rather than validated: there is no second room a mistake could
+    // reach, and rejecting it would only strand a reply the agent meant to send.
+    resolveTarget: () => {
+      if (!activeSession) {
+        return { ok: false as const, error: new Error("Omadeus: not connected.") };
       }
-      return { ok: true, to: id };
+      return { ok: true as const, to: String(activeSession.roomId) };
     },
   },
 
@@ -384,21 +260,20 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
             fix: "Run: openclaw setup omadeus",
           });
         }
-        // Without this id the inbound policy cannot recognise the OpenClaw DM, so every
-        // message is dropped while the account otherwise looks healthy. Surface it.
+        // Without this id the channel cannot tell its own replies from the
+        // operator's messages, so it refuses to start. Surface it as config,
+        // not as a runtime error.
         if (
           entry.enabled !== false &&
           entry.configured === true &&
-          resolveOpenClawMemberId(
-            getOmadeusChannelConfig(getOmadeusRuntime().config.current() as OpenClawConfig),
-          ) === undefined
+          getOmadeusChannelConfig(getOmadeusRuntime().config.current() as OpenClawConfig)
+            ?.openClawMemberId === undefined
         ) {
           issues.push({
             channel: CHANNEL_ID,
             accountId: String(entry.accountId ?? DEFAULT_ACCOUNT_ID),
             kind: "config",
-            message:
-              "Omadeus openClawMemberId is missing; no direct messages will be answered.",
+            message: "Omadeus openClawMemberId is missing; the channel will not start.",
             fix: "Run: openclaw setup omadeus",
           });
         }
@@ -421,7 +296,7 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         configured: !isUnconfigured(account),
         runtime,
       }),
-      baseUrl: account.maestroUrl,
+      baseUrl: account.omadeusUrl,
       credentialSource: account.credentialSource,
       connected: runtime?.connected ?? false,
       lastConnectedAt: runtime?.lastConnectedAt ?? null,
@@ -431,212 +306,54 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
   gateway: {
     startAccount: async (ctx) => {
       const { account, cfg, abortSignal } = ctx;
-      ctx.log?.info(`[omadeus] starting for org ${account.organizationId}`);
+      const log: OmadeusLog = ctx.log ?? { info: () => {}, warn: () => {}, error: () => {} };
+      log.info(`[omadeus] starting for org ${account.organizationId}`);
+
+      const fail = (message: string) => {
+        log.error(`[omadeus] ${message}`);
+        ctx.setStatus({ accountId: account.accountId, running: false, lastError: message });
+      };
 
       if (isUnconfigured(account)) {
-        ctx.log?.warn("[omadeus] skipping start: credentials not configured");
-        ctx.setStatus({
-          accountId: account.accountId,
-          running: false,
-          lastError: "credentials not configured",
-        });
+        fail("credentials not configured");
         return;
       }
 
-      const hasCachedSession = Boolean(account.sessionToken?.trim());
-      if (!account.apiKey && !account.password && !hasCachedSession) {
-        ctx.log?.warn("[omadeus] skipping start: apiKey/password/sessionToken not set");
-        ctx.setStatus({
-          accountId: account.accountId,
-          running: false,
-          lastError: "apiKey/password/sessionToken not set",
-        });
+      const openClawMemberId = account.openClawMemberId;
+      if (openClawMemberId === undefined) {
+        fail("openClawMemberId is not set; cannot tell OpenClaw's messages from the operator's");
         return;
       }
 
-      const log = ctx.log ?? { info: () => {}, warn: () => {}, error: () => {} };
-      let isConnected = false;
-
-      let tokenManager: OmadeusTokenManager;
-      let selfReferenceId: number;
-
-      if (account.apiKey) {
-        // API-key mode: nothing to refresh or persist. Verify the key once so
-        // a revoked/typoed key fails loudly at start, and resolve the member
-        // identity from it (there is no JWT payload to read).
-        tokenManager = createApiKeyTokenManager(account.apiKey);
-        try {
-          const identity = await verifyApiKey({
-            maestroUrl: account.maestroUrl,
-            apiKey: account.apiKey,
-          });
-          selfReferenceId = identity.memberId;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.error(`[omadeus] API key verification failed: ${msg}`);
-          ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
-          return;
-        }
-      } else {
-        const casTokenManager = createTokenManager({
-          casUrl: account.casUrl,
-          maestroUrl: account.maestroUrl,
-          email: account.email,
-          password: account.password,
-          organizationId: account.organizationId,
-          initialToken: account.sessionToken,
-          onRefresh: (token) => {
-            log.info("[omadeus] token refreshed");
-            void persistSessionToken(token, account.environment).catch((err) =>
-              log.warn(`[omadeus] failed to persist session token: ${String(err)}`),
-            );
-          },
-          onError: (err) => {
-            log.error(`[omadeus] token refresh failed: ${err.message}`);
-            ctx.setStatus({ accountId: account.accountId, lastError: err.message });
+      let session: OmadeusSession;
+      try {
+        session = await openOmadeusSession({
+          account: { ...account, openClawMemberId },
+          cfg,
+          runtime: ctx.runtime,
+          log,
+          events: {
+            onInbound: () =>
+              ctx.setStatus({ accountId: account.accountId, lastInboundAt: Date.now() }),
+            onConnect: () =>
+              ctx.setStatus({
+                accountId: account.accountId,
+                connected: true,
+                lastConnectedAt: Date.now(),
+              }),
+            onDisconnect: () =>
+              ctx.setStatus({ accountId: account.accountId, connected: false }),
+            onError: (err) =>
+              ctx.setStatus({ accountId: account.accountId, lastError: err.message }),
           },
         });
-
-        try {
-          await casTokenManager.refresh();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.error(`[omadeus] initial auth failed: ${msg}`);
-          ctx.setStatus({ accountId: account.accountId, running: false, lastError: msg });
-          return;
-        }
-
-        casTokenManager.startAutoRefresh();
-        tokenManager = casTokenManager;
-        selfReferenceId = casTokenManager.getPayload().referenceId;
+      } catch (err) {
+        fail(err instanceof Error ? err.message : String(err));
+        return;
       }
 
-      gatewayState.tokenManager = tokenManager;
-
-      const sentTracker = new SentMessageTracker();
-      gatewayState.sentTracker = sentTracker;
-
-      const outboundDeps: OutboundDeps = {
-        apiOpts: { maestroUrl: account.maestroUrl, tokenManager },
-        sentTracker,
-      };
-
-      /**
-       * Report `connected` to Omadeus once the websocket is up. Never throws:
-       * the socket is already healthy at this point, and losing the gateway
-       * over a status call would be a worse failure than a stale status.
-       */
-      const announceConnected = () => {
-        configureOpenClawBot({
-          maestroUrl: account.maestroUrl,
-          authorization: tokenManager.authorizationHeader(),
-          openclawStatus: "connected",
-        })
-          .then(() => log.info("[omadeus] reported OpenClaw status: connected"))
-          .catch((err) =>
-            log.warn(
-              "[omadeus] failed to report connected status; the OpenClaw DM will " +
-                `keep going to the setup assistant: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-            ),
-          );
-      };
-
-      const handleMessage = createOmadeusMessageHandler({
-        cfg,
-        runtime: ctx.runtime,
-        log,
-        outboundDeps,
-        selfReferenceId,
-      });
-
-      const jaguar = createJaguarSocketClient({
-        maestroUrl: account.maestroUrl,
-        tokenManager,
-        log,
-        onMessage: (msg) => {
-          const label =
-            msg.subscribableKind === "direct"
-              ? `DM from ${msg.senderReferenceId}`
-              : `${msg.subscribableKind}/${msg.roomName ?? msg.roomId} from ${msg.senderReferenceId}`;
-          log.info(`[jaguar] ${label}: ${msg.body.slice(0, 80)}`);
-
-          // Suppress echoes of messages we sent (we send as the logged-in
-          // account, so our own messages come back over the socket). This
-          // replaces the old "drop everything from self" rule, letting the
-          // logged-in user message their own OpenClaw.
-          if (
-            sentTracker.isEcho({ id: msg.id, temporaryId: msg.temporaryId })
-          ) {
-            log.debug?.(`[jaguar] suppressed self-echo id=${msg.id}`);
-            return;
-          }
-
-          const inbound = parseJaguarMessage(msg, { selfReferenceId }, log);
-          if (inbound) {
-            log.info(
-              `[jaguar] inbound: ${inbound.subscribableKind} room=${inbound.roomId} ` +
-                `from=${inbound.from} mention=${inbound.isMention}`,
-            );
-            ctx.setStatus({ accountId: account.accountId, lastInboundAt: Date.now() });
-            handleMessage(inbound).catch((err) => {
-              log.error(
-                `[jaguar] dispatch error: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            });
-          }
-        },
-        onOtherEvent: (data) => {
-          log.info(`[jaguar] non-message event: ${JSON.stringify(data).slice(0, 120)}`);
-        },
-        onConnect: () => {
-          if (!isConnected) {
-            isConnected = true;
-            ctx.setStatus({ accountId: account.accountId, connected: true, lastConnectedAt: Date.now() });
-            // Tell Omadeus the gateway is live. Until this lands, Jaguar keeps
-            // routing the member's OpenClaw DM to the setup assistant and
-            // refuses `asOpenclaw` on send/see, so the bot cannot answer.
-            //
-            // Fire-and-forget: a failure here must not tear down a healthy
-            // socket, and `onDisconnect` clears `isConnected`, so the next
-            // reconnect retries. Hosted instances reach this path too — they
-            // boot with OPENCLAW_SKIP_ONBOARDING=1 and never run the wizard.
-            announceConnected();
-          }
-        },
-        onDisconnect: () => {
-          isConnected = false;
-          ctx.setStatus({ accountId: account.accountId, connected: false });
-        },
-        onError: (err) => ctx.setStatus({ accountId: account.accountId, lastError: err.message }),
-      });
-
-      jaguar.connect();
-      gatewayState.jaguar = jaguar;
-
-      ctx.setStatus({
-        accountId: account.accountId,
-        running: true,
-        lastStartAt: Date.now(),
-      });
-
-      let cleanedUp = false;
-      const cleanup = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        tokenManager.stopAutoRefresh();
-        jaguar.disconnect();
-        gatewayState.tokenManager = null;
-        gatewayState.jaguar = null;
-        gatewayState.sentTracker = null;
-        lastPersistedToken = null;
-        ctx.setStatus({
-          accountId: account.accountId,
-          running: false,
-          lastStopAt: Date.now(),
-        });
-      };
+      activeSession = session;
+      ctx.setStatus({ accountId: account.accountId, running: true, lastStartAt: Date.now() });
 
       await new Promise<void>((resolve) => {
         if (abortSignal.aborted) {
@@ -646,7 +363,9 @@ export const omadeusPlugin: ChannelPlugin<Account> = {
         abortSignal.addEventListener("abort", () => resolve(), { once: true });
       });
 
-      cleanup();
+      session.close();
+      if (activeSession === session) activeSession = null;
+      ctx.setStatus({ accountId: account.accountId, running: false, lastStopAt: Date.now() });
     },
   },
 };

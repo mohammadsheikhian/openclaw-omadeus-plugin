@@ -1,40 +1,25 @@
 import { sendRoomMessage } from "./api/message.api.js";
-import type { SentMessageTracker } from "./sent-message-tracker.js";
-import { generateTemporaryId, type OmadeusApiOptions } from "./utils/http.util.js";
+import type { OmadeusApiOptions } from "./utils/http.util.js";
 
 /**
- * Sends go over REST, not the Jaguar socket. The socket still matters here indirectly:
- * because the gateway authenticates as the operator, everything it sends echoes back over
- * the socket as inbound, which is what `sentTracker` suppresses.
+ * Sends go over REST, not the Jaguar socket.
+ *
+ * Everything sent here echoes back over the socket as inbound. Nothing tracks
+ * those echoes: they are authored by the OpenClaw bot (every send carries
+ * `asOpenclaw`), and `admitOmadeusMessage` drops anything the bot authored.
  */
-export type OutboundDeps = {
-  apiOpts: OmadeusApiOptions;
-  sentTracker?: SentMessageTracker;
-};
-
 export async function sendOmadeusMessage(
-  deps: OutboundDeps,
-  params: { to: string; text: string },
+  apiOpts: OmadeusApiOptions,
+  params: { roomId: number; text: string },
 ): Promise<{ channel: string; messageId: string; chatId: string }> {
-  const { to, text } = params;
-
-  const temporaryId = generateTemporaryId();
-  // Register before sending: the socket echo can arrive before this HTTP call
-  // returns, so the temporaryId (and body fallback) must already be tracked.
-  deps.sentTracker?.trackOutbound({ temporaryId });
-
-  const result = await sendRoomMessage(deps.apiOpts, { roomId: to, body: text, temporaryId });
-  if (!result.ok) {
-    throw new Error(`Omadeus send failed: ${result.error}`);
-  }
-
-  if (typeof result.message?.id === "number") {
-    deps.sentTracker?.trackId(result.message.id);
-  }
+  const message = await sendRoomMessage(apiOpts, {
+    roomId: params.roomId,
+    body: params.text,
+  });
 
   return {
     channel: "omadeus",
-    messageId: String(result.message?.id ?? ""),
-    chatId: to,
+    messageId: String(message?.id ?? ""),
+    chatId: String(params.roomId),
   };
 }

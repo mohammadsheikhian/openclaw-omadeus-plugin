@@ -46,8 +46,9 @@ Then run setup:
 openclaw onboard
 ```
 
-Setup asks for your environment, email, password, and organization, then resolves the
-OpenClaw bot member automatically.
+Setup asks for your email and password, lets you choose your organization, and resolves the
+OpenClaw bot member automatically. It connects to production by default. Set `casUrl` and
+`omadeusUrl` under `channels.omadeus` when the endpoints need explicit overrides.
 
 ## Configure
 

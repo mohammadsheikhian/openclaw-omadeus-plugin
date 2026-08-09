@@ -1,28 +1,22 @@
-import type { ChannelSetupWizard, OpenClawConfig, WizardPrompter } from "openclaw/plugin-sdk/setup";
+import type { ChannelSetupWizard, WizardPrompter } from "openclaw/plugin-sdk/setup";
 import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/setup";
-import {
-  configureOpenClawBot,
-  listOrganizationMembers,
-  listOrganizations,
-  verifyApiKey,
-} from "./api/auth.api.js";
+import { configureOpenClawBot, listOrganizations } from "./api/auth.api.js";
+import { getOpenClawDirect } from "./api/direct.api.js";
 import { authenticate } from "./auth.js";
 import { getOmadeusChannelConfig, resolveOmadeusAccount } from "./config.js";
-import {
-  getOmadeusEnvironmentUrls,
-  OMADEUS_DEFAULT_ENVIRONMENT,
-  OMADEUS_ENVIRONMENTS,
-  resolveOmadeusEnvironment,
-  type OmadeusEnvironment,
-} from "./defaults.js";
-import type { OmadeusChannelConfig, OmadeusOrganizationMember } from "./types.js";
+import { resolveOmadeusUrls } from "./defaults.js";
+import { createBearerTokenManager } from "./token.js";
 
 const channel = "omadeus" as const;
 
-/** The OpenClaw bot member. Always used as the messaging allowlist — never user-selectable. */
-const OPENCLAW_MEMBER_EMAIL = "openclaw@xeba.tech";
-
-
+/**
+ * The wizard is the self-hosted path only: a person running their own gateway,
+ * answering with the email and password they already use for Omadeus.
+ *
+ * Hosted instances never reach here. Their config — including `apiKey` — is
+ * rendered by the provisioner before the gateway starts, and they boot with
+ * `OPENCLAW_SKIP_ONBOARDING=1`.
+ */
 function formatAuthError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const parts = [err.message];
@@ -30,64 +24,56 @@ function formatAuthError(err: unknown): string {
   if (cause instanceof Error) {
     parts.push(cause.message);
     const code = (cause as Error & { code?: unknown }).code;
-    if (typeof code === "string" && code) {
-      parts.push(`(${code})`);
-    }
+    if (typeof code === "string" && code) parts.push(`(${code})`);
   } else if (typeof cause === "string" && cause.trim()) {
     parts.push(cause);
   }
   return parts.join(" — ");
 }
 
-async function noteOmadeusAuthHelp(
+async function promptCredentials(
   prompter: WizardPrompter,
-  environment: OmadeusEnvironment,
-): Promise<void> {
-  const envLabel = OMADEUS_ENVIRONMENTS[environment].label;
-  await prompter.note(
-    [
-      `Connect OpenClaw to Omadeus (${envLabel}).`,
-      "",
-      "We'll ask for your email and password, then show the organizations on your account so you can pick one.",
-    ].join("\n"),
-    "Omadeus setup",
-  );
+  existing: { email?: string },
+): Promise<{ email: string; password: string }> {
+  const email = String(
+    await prompter.text({
+      message: "Omadeus username (email)",
+      initialValue: existing.email,
+      validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
+    }),
+  ).trim();
+  const password = String(
+    await prompter.text({
+      message: "Omadeus password",
+      sensitive: true,
+      validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
+    }),
+  ).trim();
+  return { email, password };
 }
 
-async function promptEnvironment(
-  prompter: WizardPrompter,
-  existing?: OmadeusEnvironment,
-): Promise<OmadeusEnvironment> {
-  const initial = existing ?? OMADEUS_DEFAULT_ENVIRONMENT;
-  const choice = await prompter.select({
-    message: "Select Omadeus environment",
-    options: (Object.keys(OMADEUS_ENVIRONMENTS) as OmadeusEnvironment[]).map((env) => ({
-      value: env,
-      label: OMADEUS_ENVIRONMENTS[env].label,
-      hint: getOmadeusEnvironmentUrls(env).maestroUrl,
-    })),
-    initialValue: initial,
-  });
-  return resolveOmadeusEnvironment(choice);
-}
-
+/**
+ * Pick the organization. Listed by email before login, because the account may
+ * belong to several and the token is scoped to one of them.
+ */
 async function promptOrganizationId(params: {
   prompter: WizardPrompter;
-  maestroUrl: string;
+  omadeusUrl: string;
   email: string;
   existing?: number;
 }): Promise<number> {
-  const { prompter, maestroUrl, email, existing } = params;
+  const { prompter, omadeusUrl, email, existing } = params;
 
   try {
-    const orgs = await listOrganizations({ maestroUrl, email });
-    if (orgs.length > 0) {
+    const orgs = await listOrganizations({ omadeusUrl, email });
+    const first = orgs[0];
+    if (first) {
       if (orgs.length === 1) {
         await prompter.note(
-          `Found organization: ${orgs[0]!.title} (${orgs[0]!.id})`,
+          `Found organization: ${first.title} (${first.id})`,
           "Omadeus organization",
         );
-        return orgs[0]!.id;
+        return first.id;
       }
       const choice = await prompter.select({
         message: "Select organization",
@@ -96,7 +82,7 @@ async function promptOrganizationId(params: {
           label: `${org.title} (${org.membersCount} members)`,
           hint: `ID: ${org.id}`,
         })),
-        initialValue: existing ? String(existing) : String(orgs[0]!.id),
+        initialValue: String(existing ?? first.id),
       });
       return Number(choice);
     }
@@ -120,54 +106,6 @@ async function promptOrganizationId(params: {
   return Number(String(raw).trim());
 }
 
-/**
- * Always resolves the OpenClaw bot member (`openclaw@xeba.tech`). The member is
- * looked up via the organization members API with an email filter, so the API
- * returns only that one member when it exists. The user never selects this — it
- * is hardcoded.
- */
-async function loadOpenClawMember(params: {
-  maestroUrl: string;
-  authorization: string;
-  organizationId: number;
-}): Promise<OmadeusOrganizationMember> {
-  const members = await listOrganizationMembers({
-    maestroUrl: params.maestroUrl,
-    authorization: params.authorization,
-    organizationId: params.organizationId,
-    email: OPENCLAW_MEMBER_EMAIL,
-  });
-  const member =
-    members.find((m) => m.email?.toLowerCase() === OPENCLAW_MEMBER_EMAIL) ?? members[0];
-  if (!member) {
-    throw new Error(
-      `OpenClaw member (${OPENCLAW_MEMBER_EMAIL}) was not found in organization ${params.organizationId}.`,
-    );
-  }
-  return member;
-}
-
-async function promptCredentials(
-  prompter: WizardPrompter,
-  existing: { email?: string; password?: string },
-): Promise<{ email: string; password: string }> {
-  const email = String(
-    await prompter.text({
-      message: "Omadeus username (email)",
-      initialValue: existing.email,
-      validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
-    }),
-  ).trim();
-  const password = String(
-    await prompter.text({
-      message: "Omadeus password",
-      sensitive: true,
-      validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
-    }),
-  ).trim();
-  return { email, password };
-}
-
 export const omadeusSetupWizard: ChannelSetupWizard = {
   channel,
   resolveAccountIdForConfigure: () => DEFAULT_ACCOUNT_ID,
@@ -179,141 +117,51 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
     unconfiguredHint: "needs credentials",
     configuredScore: 2,
     unconfiguredScore: 0,
-    resolveConfigured: ({ cfg }) => {
-      const account = resolveOmadeusAccount({ cfg });
-      return account.credentialSource !== "none";
-    },
+    resolveConfigured: ({ cfg }) => resolveOmadeusAccount({ cfg }).credentialSource !== "none",
     resolveStatusLines: ({ cfg }) => {
-      const account = resolveOmadeusAccount({ cfg });
-      const configured = account.credentialSource !== "none";
-      return [
-        `Omadeus: ${configured ? "configured" : "needs email, password, and organization ID"}`,
-      ];
+      const configured = resolveOmadeusAccount({ cfg }).credentialSource !== "none";
+      return [`Omadeus: ${configured ? "configured" : "needs email, password, and organization"}`];
     },
-    resolveSelectionHint: ({ cfg }) => {
-      const account = resolveOmadeusAccount({ cfg });
-      return account.credentialSource !== "none" ? "configured" : "needs credentials";
-    },
-    resolveQuickstartScore: ({ cfg }) => {
-      const account = resolveOmadeusAccount({ cfg });
-      return account.credentialSource !== "none" ? 2 : 0;
-    },
+    resolveSelectionHint: ({ cfg }) =>
+      resolveOmadeusAccount({ cfg }).credentialSource !== "none"
+        ? "configured"
+        : "needs credentials",
+    resolveQuickstartScore: ({ cfg }) =>
+      resolveOmadeusAccount({ cfg }).credentialSource !== "none" ? 2 : 0,
   },
   credentials: [],
   finalize: async ({ cfg, prompter }) => {
-    const account = resolveOmadeusAccount({ cfg });
     const section = getOmadeusChannelConfig(cfg) ?? {};
-    let next = cfg;
+    const { casUrl, omadeusUrl } = resolveOmadeusUrls(section);
 
-    const environment = await promptEnvironment(
-      prompter,
-      section.environment ? resolveOmadeusEnvironment(section.environment) : undefined,
+    await prompter.note(
+      [
+        "Connect OpenClaw to Omadeus.",
+        "",
+        "We'll ask for your email and password, then show the organizations on your",
+        "account so you can pick one.",
+      ].join("\n"),
+      "Omadeus setup",
     );
-    const { casUrl, maestroUrl } = getOmadeusEnvironmentUrls(environment);
 
-    const authMethod = await prompter.select({
-      message: "How do you want to authenticate to Omadeus?",
-      options: [
-        {
-          value: "apikey",
-          label: "API key (recommended)",
-          hint: "Create one in Omadeus, no password stored",
-        },
-        {
-          value: "password",
-          label: "Email and password",
-          hint: "Legacy CAS login with session refresh",
-        },
-      ],
-      initialValue: section.apiKey ? "apikey" : "password",
-    });
-
-    if (authMethod === "apikey") {
-      const apiKey = String(
-        await prompter.text({
-          message: "Omadeus API key",
-          sensitive: true,
-          initialValue: section.apiKey,
-          validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
-        }),
-      ).trim();
-
-      const identity = await verifyApiKey({ maestroUrl, apiKey });
-      await prompter.note(
-        `API key verified (member ${identity.memberId}, organization ${identity.organizationId}).`,
-        "Omadeus authentication",
-      );
-
-      const authorization = `ApiToken ${apiKey}`;
-      const openClawMember = await loadOpenClawMember({
-        maestroUrl,
-        authorization,
-        organizationId: identity.organizationId,
-      });
-
-      // Setup is complete, but the gateway has not reached Jaguar yet.
-      // `connected` is reported from the websocket `open` handler in channel.ts.
-      await configureOpenClawBot({
-        maestroUrl,
-        authorization,
-        openclawStatus: "connecting",
-      });
-
-      await prompter.note(
-        `Inbound policy (Jaguar chat): the DM with the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}) is the only room served.`,
-        "Omadeus inbound policy",
-      );
-
-      next = {
-        ...next,
-        channels: {
-          ...next.channels,
-          omadeus: {
-            enabled: true,
-            environment,
-            apiKey,
-            organizationId: identity.organizationId,
-            openClawMemberId: openClawMember.referenceId,
-            inbound: {
-              version: 1,
-              direct: {
-                enabled: true,
-                requireMention: "never",
-              },
-            },
-          },
-        },
-      };
-
-      return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
-    }
-
-    if (account.credentialSource === "none") {
-      await noteOmadeusAuthHelp(prompter, environment);
-    }
-
-    const envEmail = process.env.OMADEUS_EMAIL?.trim();
-    const envPassword = process.env.OMADEUS_PASSWORD?.trim();
-
-    let { email, password } = await promptCredentials(prompter, {
-      email: section.email ?? envEmail,
-      password: section.password ?? envPassword,
-    });
-
+    let { email, password } = await promptCredentials(prompter, { email: section.email });
     const organizationId = await promptOrganizationId({
       prompter,
-      maestroUrl,
+      omadeusUrl,
       email,
       existing: section.organizationId,
     });
 
-    let sessionToken: string | undefined;
-    let selfReferenceId: number | undefined;
-    while (true) {
+    // Loop until the credentials actually work. Saving unverified credentials
+    // produces a gateway that starts and then fails silently, which is the
+    // worst outcome for someone who is not going to read a log.
+    let sessionToken = "";
+    let selfReferenceId = 0;
+    for (;;) {
       try {
         const { dolphinToken, payload } = await authenticate({
           casUrl,
-          maestroUrl,
+          omadeusUrl,
           email,
           password,
           organizationId,
@@ -332,72 +180,74 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
           initialValue: true,
         });
         if (!retry) {
-          await prompter.note(
-            "Saving config without verifying credentials. The gateway may fail to connect.",
-            "Omadeus authentication",
-          );
-          break;
+          throw new Error("Omadeus setup cancelled: credentials could not be verified.");
         }
-        ({ email, password } = await promptCredentials(prompter, { email, password }));
+        ({ email, password } = await promptCredentials(prompter, { email }));
       }
     }
 
-    if (!sessionToken) {
-      throw new Error("Authentication is required to list channels.");
-    }
-
-    if (typeof selfReferenceId !== "number") {
-      throw new Error("Authentication did not return an Omadeus member reference ID.");
-    }
-
-    const sessionAuthorization = `Bearer ${sessionToken}`;
-    const openClawMember = await loadOpenClawMember({
-      maestroUrl,
-      authorization: sessionAuthorization,
-      organizationId,
+    // Resolve the OpenClaw bot from the DM itself: of the two members of the
+    // OpenClaw direct, the one that is not us. Asking Jaguar beats hardcoding
+    // an address, and it is the same room the gateway will serve.
+    const direct = await getOpenClawDirect({
+      omadeusUrl,
+      tokenManager: createBearerTokenManager(sessionToken),
     });
+    const openClawMemberId = direct.members.find(
+      (member) => member.referenceId !== selfReferenceId,
+    )?.referenceId;
+    if (openClawMemberId === undefined) {
+      throw new Error(
+        `Could not find the OpenClaw member in direct room ${direct.id}. ` +
+          "Ask an Omadeus admin to check the OpenClaw bot exists in this organization.",
+      );
+    }
 
-    // See the note above: the gateway announces `connected` itself once its
-    // websocket opens.
+    // The gateway announces `connected` itself once its websocket opens; this
+    // only moves the member out of "never set up".
     await configureOpenClawBot({
-      maestroUrl,
-      authorization: sessionAuthorization,
+      omadeusUrl,
+      authorization: `Bearer ${sessionToken}`,
       openclawStatus: "connecting",
     });
 
-    // The DM with the OpenClaw member is the only room served; the inbound policy
-    // recognises it by `openClawMemberId`. There is no separate sender allowlist —
-    // the room itself is the allowlist.
     await prompter.note(
-      `Inbound policy (Jaguar chat): the DM with the OpenClaw member (${OPENCLAW_MEMBER_EMAIL}, ref ${openClawMember.referenceId}) is the only room served.`,
-      "Omadeus inbound policy",
+      `OpenClaw will answer in your direct message with member ${openClawMemberId} (room ${direct.id}). ` +
+        "That conversation is the only one it reads.",
+      "Omadeus",
     );
 
-    next = {
-      ...next,
-      channels: {
-        ...next.channels,
-        omadeus: {
-          enabled: true,
-          environment,
-          email,
-          password,
-          organizationId,
-          sessionToken,
-          sessionTokenEnvironment: environment,
-          openClawMemberId: openClawMember.referenceId,
-          inbound: {
-            version: 1,
-            direct: {
-              enabled: true,
-              requireMention: "never",
-            },
+    // Declare the operator as the command owner. Without an entry here
+    // `senderIsOwner` is false for every turn, and OpenClaw strips its
+    // owner-only tools — `cron` among them — so reminders silently never work.
+    // Hosted instances get this from the provisioner; the wizard is the only
+    // place the self-hosted path learns the operator's id.
+    const commands = (cfg.commands ?? {}) as Record<string, unknown>;
+    const ownerAllowFrom = Array.isArray(commands.ownerAllowFrom)
+      ? (commands.ownerAllowFrom as unknown[]).map(String)
+      : [];
+    const selfId = String(selfReferenceId);
+    if (!ownerAllowFrom.includes(selfId)) ownerAllowFrom.push(selfId);
+
+    return {
+      cfg: {
+        ...cfg,
+        commands: { ...commands, ownerAllowFrom },
+        channels: {
+          ...cfg.channels,
+          omadeus: {
+            enabled: true,
+            casUrl,
+            omadeusUrl,
+            email,
+            password,
+            organizationId,
+            openClawMemberId,
           },
         },
       },
+      accountId: DEFAULT_ACCOUNT_ID,
     };
-
-    return { cfg: next, accountId: DEFAULT_ACCOUNT_ID };
   },
   disable: (cfg) => ({
     ...cfg,
@@ -407,5 +257,3 @@ export const omadeusSetupWizard: ChannelSetupWizard = {
     },
   }),
 };
-
-export const omadeusOnboardingAdapter = omadeusSetupWizard;
